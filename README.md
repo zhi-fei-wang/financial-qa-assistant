@@ -209,10 +209,12 @@ python smart_eval.py                 # 全量 1,410 条
 
 | 版本 | 日期 | 内容 |
 |:--:|------|------|
-| v1.0 | 2026-07-27 | ReAct 循环、三级记忆、14 条规则、诚实降级、6 层 JSON 防御 |
-| v2.0 | 2026-07-29 | 多信号融合检索 (SignalFusion)、结构化 Fact 记忆、多信号实体匹配 |
-| v2.1 | 2026-07-29 | Plan-before-ReAct、ResultEnvelope、两层去重、TempFileStore |
-| v2.2 | 2026-07-29 | 研报检索 (P0)、量化评测 (P1)、OpenIE 抽取 (P2)、因果推理 (P3)、Neo4j+Vector 适配 (P4) |
+| v1.0 | 07-27 | ReAct 循环、三级记忆、14 条规则、诚实降级、6 层 JSON 防御 |
+| v2.0 | 07-29 | SignalFusion 多信号融合检索、Fact 结构化记忆、多信号实体匹配 |
+| v2.1 | 07-29 | Plan-before-ReAct、ResultEnvelope 证据输出、两层去重、TempFileStore |
+| v2.2 | 07-29 | 研报检索 P0、量化评测 P1、OpenIE 抽取 P2、因果推理 P3、Neo4j+Vector P4 |
+| v2.3 | 07-29 | 多期财务对比、版本号显示、多 LLM 提供商、快速路径 |
+| v2.4 | 07-29 | 工具内嵌多期对比表、Streamlit Cloud 部署、数据 gzip 压缩 |
 
 ---
 
@@ -235,4 +237,4 @@ python -c "from src.router.tool_registry import ToolRegistry; [print(f'{t.name}'
 
 ---
 
-> 📅 最后更新：2026-07-29 | 🤖 LLM: 多提供商兼容 | 🏦 命题单位：东吴证券 | 🏫 第五届中国研究生金融科技创新大赛
+> 📅 最后更新：2026-07-29 | 🤖 LLM: 多提供商兼容 | 🚀 已部署 Streamlit Cloud | 🏦 东吴证券 | v2.4.0
