@@ -14,7 +14,7 @@ from pathlib import Path
 # 确保项目根目录在 sys.path 中
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Streamlit Cloud: 将 st.secrets 注入 os.environ（必须在 import src 之前）
+# Streamlit Cloud: 将 st.secrets 注入 os.environ
 try:
     import streamlit as st
     for key in ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
@@ -129,7 +129,7 @@ with st.sidebar:
 
     # 版本号
     st.markdown("---")
-    st.markdown(f"<div style='font-size:0.7rem;color:#999;text-align:center'>v2.3.3</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:0.7rem;color:#999;text-align:center'>v2.4.0</div>", unsafe_allow_html=True)
 
     # 快捷查询
     st.markdown("### ⚡ 快捷查询")
