@@ -19,6 +19,19 @@ class DataLoader:
     def __init__(self):
         self.cfg = get_config().data
 
+    def _load_data_flex(self, folder: str, stem: str, nrows=None, has_excel=False):
+        """弹性加载: .csv.gz → .csv → .xlsx（Streamlit Cloud 兼容）"""
+        base = os.path.join(os.path.dirname(__file__), '..', '..', folder)
+        for name in [f"{stem}.csv.gz", f"{stem}.csv"]:
+            path = os.path.join(base, name)
+            if os.path.exists(path):
+                return pd.read_csv(path, nrows=nrows)
+        if has_excel:
+            xlsx_path = os.path.join(base, f"{stem}.xlsx")
+            if os.path.exists(xlsx_path):
+                return pd.read_excel(xlsx_path, nrows=nrows)
+        raise FileNotFoundError(f"No {stem}.[csv.gz|csv|xlsx] in {base}")
+
     @staticmethod
     def _read_csv_smart(path: str, **kwargs) -> pd.DataFrame:
         """
@@ -58,15 +71,8 @@ class DataLoader:
     # ---- 数据集 2: 股东持股数据 ----
 
     def load_shareholder_data(self, nrows: Optional[int] = None) -> pd.DataFrame:
-        """加载股东持股数据（优先CSV，降级Excel，~1s vs 50s）
-        Returns:
-            DataFrame with 64.6万 rows, 16 columns
-        """
-        csv_path = self.cfg.shareholder_path.replace('.xlsx', '.csv')
-        if os.path.exists(csv_path):
-            df = self._read_csv_smart(csv_path, nrows=nrows)
-        else:
-            df = pd.read_excel(self.cfg.shareholder_path, nrows=nrows)
+        """加载股东持股数据（优先 .csv.gz → .csv → .xlsx）"""
+        return self._load_data_flex("2", "clean", nrows, has_excel=True)
 
         # 统一股票代码格式: 补足6位数字
         if "s_info_windcode" in df.columns:
@@ -98,15 +104,8 @@ class DataLoader:
     # ---- 数据集 3: 公司公告 ----
 
     def load_announcements(self, nrows: Optional[int] = None) -> pd.DataFrame:
-        """加载公司公告数据（优先CSV，降级Excel）
-        Returns:
-            DataFrame with 7311 rows, 11 columns
-        """
-        csv_path = self.cfg.announcement_path.replace('.xlsx', '.csv')
-        if os.path.exists(csv_path):
-            df = self._read_csv_smart(csv_path, nrows=nrows)
-        else:
-            df = pd.read_excel(self.cfg.announcement_path, nrows=nrows)
+        """加载公司公告数据（优先 .csv.gz → .csv → .xlsx）"""
+        return self._load_data_flex("3", "clean", nrows, has_excel=True)
 
         if "s_info_windcode" in df.columns:
             df["stock_code"] = df["s_info_windcode"].apply(self._normalize_stock_code)
