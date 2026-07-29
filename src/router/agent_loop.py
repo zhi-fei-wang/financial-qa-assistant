@@ -112,13 +112,25 @@ class FinancialAgent:
             self._finalize_turn(user_query, response, [], intent.intent)
             return response
 
-        # === Step 2.5: 行动规划（启发 1: 轻量 Plan-before-ReAct） ===
+        # === Step 2.5: 行动规划（仅复杂多工具场景） ===
         action_plan = None
-        complex_intents = {"EQUITY_PENETRATION", "FINANCIAL_ANALYSIS"}
+        complex_intents = {"EQUITY_PENETRATION"}  # 只有股权穿透需要多工具串联
         if intent.intent in complex_intents and self.llm:
             action_plan = self._plan_actions(user_query, intent, context_text)
             if len(action_plan) <= 1:
-                action_plan = None  # 单工具不需要计划
+                action_plan = None
+
+        # === Step 2.6: 单工具快速路径（赛题 ≤5s 要求） ===
+        if intent.suggested_tool and not action_plan and self.llm:
+            # 简单查询 → 直接调工具，跳过 ReAct 循环
+            fast_result = self._execute_tool_by_name(intent.suggested_tool, intent.params_hint)
+            if fast_result.get("success"):
+                tool_results = [fast_result]
+                response = self._generate_response_with_tools(user_query, fast_result, context_text)
+                response = self._sanitize_response(response)
+                if not self._is_empty_response(response):
+                    self._finalize_turn(user_query, response, tool_results, intent.intent)
+                    return response
 
         # === Step 3: ReAct 多工具调用循环 ===
         if self.llm:
@@ -263,10 +275,9 @@ class FinancialAgent:
 ## 规则（严格遵守）
 1. 格式: {{"action":"tool","tool":"工具名","params":{{...}},"reason":"..."}} 或 {{"action":"answer","content":"..."}}
 2. **工具返回"无数据"或"NO_REALTIME_DATA"时，你必须立即换一个工具！** 不要在第1个工具失败后就回答
-3. 对于任何涉及具体股票的问题，至少调用 2 个不同工具（如先查行情→行情不可用→立即查财报或股东）
-4. 回答中要包含你实际查到的数据，不要说"我可以帮你查"却不查
-5. 最多 {max_iterations} 次调用，之后必须给出回答
-6. **【关键】当输出 action:answer 时，content 必须用纯文本格式！不要在 content 中再嵌套 JSON！**
+3. 回答中要包含你实际查到的数据，不要说"我可以帮你查"却不查
+4. 最多 {max_iterations} 次调用，之后必须给出回答。简单查询应在1-2次调用内完成。
+5. **【关键】当输出 action:answer 时，content 必须用纯文本格式！不要在 content 中再嵌套 JSON！**
 
 ## 关键原则
 - **绝不编造数据**，工具返回什么就说什么，没查到就是没有
