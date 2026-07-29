@@ -129,7 +129,7 @@ with st.sidebar:
 
     # 版本号
     st.markdown("---")
-    st.markdown(f"<div style='font-size:0.7rem;color:#999;text-align:center'>v2.3.0</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:0.7rem;color:#999;text-align:center'>v2.3.1</div>", unsafe_allow_html=True)
 
     # 快捷查询
     st.markdown("### ⚡ 快捷查询")

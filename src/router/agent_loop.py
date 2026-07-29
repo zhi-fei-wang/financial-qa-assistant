@@ -122,11 +122,37 @@ class FinancialAgent:
 
         # === Step 2.6: 单工具快速路径（赛题 ≤5s 要求） ===
         if intent.suggested_tool and not action_plan and self.llm:
-            # 简单查询 → 直接调工具，跳过 ReAct 循环
-            fast_result = self._execute_tool_by_name(intent.suggested_tool, intent.params_hint)
-            if fast_result.get("success"):
-                tool_results = [fast_result]
-                response = self._generate_response_with_tools(user_query, fast_result, context_text)
+            tool_results = []
+            # 财务查询类：自动拉近3期数据（不依赖 ReAct prompt）
+            if intent.intent == "FINANCIAL_ANALYSIS" and intent.suggested_tool == "query_financial_statement":
+                for year in ["", "2023"]:  # 最新期 + 2023
+                    params = dict(intent.params_hint) if intent.params_hint else {}
+                    if year:
+                        params["report_period"] = year
+                    r = self._execute_tool_by_name(intent.suggested_tool, params)
+                    if r.get("success"):
+                        tool_results.append(r)
+
+                # 也拉财务异常检测
+                anomaly_params = {"stock_code": intent.params_hint.get("stock_code", "")}
+                r = self._execute_tool_by_name("financial_anomaly_check", anomaly_params)
+                if r.get("success"):
+                    tool_results.append(r)
+            else:
+                fast_result = self._execute_tool_by_name(intent.suggested_tool, intent.params_hint)
+                if fast_result.get("success"):
+                    tool_results = [fast_result]
+
+            if tool_results:
+                # 合并所有结果
+                combined = tool_results[0]
+                if len(tool_results) > 1:
+                    # 拼接 rendered
+                    rendered_parts = [r.get("data", {}).get("rendered", "") for r in tool_results if r.get("data")]
+                    combined_rendered = "\n\n".join(p for p in rendered_parts if p)
+                    combined["data"] = {**combined.get("data", {}), "rendered_combined": combined_rendered}
+                    combined["data"]["_multi_period"] = True
+                response = self._generate_response_with_tools(user_query, combined, context_text)
                 response = self._sanitize_response(response)
                 if not self._is_empty_response(response):
                     self._finalize_turn(user_query, response, tool_results, intent.intent)
