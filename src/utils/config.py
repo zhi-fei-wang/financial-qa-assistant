@@ -94,32 +94,44 @@ class AppConfig:
     debug: bool = False
 
 
+def _get_secret(key: str, default: str = "") -> str:
+    """读取配置: os.getenv > st.secrets > default（兼容 Streamlit Cloud）"""
+    val = os.getenv(key, "")
+    if val:
+        return val
+    try:
+        import streamlit as st
+        val = st.secrets.get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return default
+
+
 def load_config() -> AppConfig:
     """
-    从环境变量加载配置，创建 AppConfig 实例。
-    优先级: 环境变量 > 默认值
+    从环境变量/Streamlit Secrets 加载配置。
+    优先级: 环境变量 > st.secrets > 默认值
     """
     config = AppConfig()
 
     # --- LLM 配置 (支持 OpenAI / DeepSeek / 其他 OpenAI 兼容 API) ---
-    # API Key: LLM_API_KEY > DEEPSEEK_API_KEY > OPENAI_API_KEY (优先级递减)
     config.llm.api_key = (
-        os.getenv("LLM_API_KEY", "") or
-        os.getenv("DEEPSEEK_API_KEY", "") or
-        os.getenv("OPENAI_API_KEY", "")
+        _get_secret("LLM_API_KEY") or
+        _get_secret("DEEPSEEK_API_KEY") or
+        _get_secret("OPENAI_API_KEY")
     )
-    # Base URL: LLM_BASE_URL > DEEPSEEK_BASE_URL > OPENAI_BASE_URL > 默认 DeepSeek
     config.llm.base_url = (
-        os.getenv("LLM_BASE_URL", "") or
-        os.getenv("DEEPSEEK_BASE_URL", "") or
-        os.getenv("OPENAI_BASE_URL", "") or
+        _get_secret("LLM_BASE_URL") or
+        _get_secret("DEEPSEEK_BASE_URL") or
+        _get_secret("OPENAI_BASE_URL") or
         "https://api.deepseek.com"
     )
-    # Model: LLM_MODEL > 默认 DeepSeek
-    config.llm.model = os.getenv("LLM_MODEL", "deepseek-chat")
-    config.llm.max_tokens = int(os.getenv("LLM_MAX_TOKENS", "8192"))
-    config.llm.temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
-    config.llm.timeout = int(os.getenv("LLM_TIMEOUT", "60"))
+    config.llm.model = _get_secret("LLM_MODEL", "deepseek-chat")
+    config.llm.max_tokens = int(_get_secret("LLM_MAX_TOKENS", "8192"))
+    config.llm.temperature = float(_get_secret("LLM_TEMPERATURE", "0.1"))
+    config.llm.timeout = int(_get_secret("LLM_TIMEOUT", "60"))
 
     # --- Memory 配置 ---
     config.memory.working_memory_max_turns = int(os.getenv("MEM_MAX_TURNS", "20"))
