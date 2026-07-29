@@ -6,12 +6,24 @@
     streamlit run app.py
 """
 
+import os
 import sys
 import time
 from pathlib import Path
 
 # 确保项目根目录在 sys.path 中
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Streamlit Cloud: 将 st.secrets 注入 os.environ（必须在 import src 之前）
+try:
+    import streamlit as st
+    for key in ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                "LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"]:
+        val = st.secrets.get(key, "")
+        if val and not os.getenv(key):
+            os.environ[key] = val
+except Exception:
+    pass
 
 import streamlit as st
 import pandas as pd
