@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Cache
+.cache/
+*.pkl
+
+# Environment
+.env
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Large originals (keep .gz versions)
+*.xlsx
+2/clean.csv
+3/clean.csv
+4/*.csv
+5/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml

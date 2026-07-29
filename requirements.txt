@@ -1,0 +1,19 @@
+# Task 1: 超长金融对话记忆增强与自适应路由 Agent
+openai>=1.0.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+networkx>=3.0
+streamlit>=1.28.0
+python-docx>=1.0.0
+
+# 向量存储 (可选)
+# chromadb>=0.4.0
+
+# 社区发现 (可选)
+# leidenalg>=0.10.0
+
+# Embedding (可选)
+# sentence-transformers>=2.2.0
+
+# 测试
+pytest>=7.0.0

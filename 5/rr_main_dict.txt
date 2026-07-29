@@ -1,0 +1,24 @@
+report_id	研报ID
+org_name 机构名称
+org_id机构 ID
+author 作者
+title 标题
+write_date 撰写日期（研报中披露的日期）
+publish_date 发布日期
+sec_code	sec_name 证券代码
+report_type 研报类型 公司研究、行业等
+report_sub_type 研报细分类型 公司深度、调研纪要、业绩点评等
+exchange_code 交易市场代码
+tar_price 目标价
+tar_price_val 目标价有效期
+rating_org 原始评级
+rating_id 评级ID
+rating_change 评级变动
+first_cover 首次覆盖
+industry_l1 一级行业分类
+industry_l2 二级行业分类
+industry_l3 三级行业分类
+sw_indu_code 申万行业代码
+abstract 摘要
+page_count 页数
+is_weekly 是否周报

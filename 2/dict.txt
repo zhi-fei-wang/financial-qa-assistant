@@ -1,0 +1,16 @@
+s_info_windcode 股票代码
+ann_dt 公告日
+s_holder_enddate 截止日期
+s_holder_holdercategory 1：个人 2：企业
+s_holder_name 股东名称
+s_holder_quantity 持股数量（股）
+s_holder_pct 持股比例%
+s_holder_sharecategory 持股性质代码 1000 A股流通股  1001限售流通A股 1014 H股流通股 1026 限售流通H股 1002 B股流通股 1003 限售流通B股
+s_holder_restrictedquantity 持有限售股份
+s_holder_aname 股东名称
+s_holder_sequence 关联方序号
+s_holder_sharecategoryname 持股性质
+[废弃]s_holder_memo 股东说明
+s_info_compcode 公司ID
+report_period 报告期
+s_holder_nat 股东性质 
