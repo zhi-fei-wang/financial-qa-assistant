@@ -151,19 +151,41 @@ class DataLoader:
     # ---- 数据集 4: 三大财务报表 ----
 
     def load_balance_sheet(self, nrows: Optional[int] = None) -> pd.DataFrame:
-        """加载资产负债表"""
-        df = pd.read_csv(self.cfg.balance_sheet_path, nrows=nrows)
+        """加载资产负债表（.csv.gz → .csv）"""
+        df = self._load_financial_file("asharebalancesheet", nrows)
         return self._clean_financial_statement(df)
 
     def load_cashflow(self, nrows: Optional[int] = None) -> pd.DataFrame:
-        """加载现金流量表"""
-        df = pd.read_csv(self.cfg.cashflow_path, nrows=nrows)
+        """加载现金流量表（.csv.gz → .csv）"""
+        df = self._load_financial_file("asharecashflow", nrows)
         return self._clean_financial_statement(df)
 
     def load_income(self, nrows: Optional[int] = None) -> pd.DataFrame:
-        """加载利润表"""
-        df = pd.read_csv(self.cfg.income_path, nrows=nrows)
+        """加载利润表（.csv.gz → .csv）"""
+        df = self._load_financial_file("ashareincome", nrows)
         return self._clean_financial_statement(df)
+
+    def _load_financial_file(self, prefix: str, nrows=None) -> pd.DataFrame:
+        """弹性加载财务CSV: 查找 4/ 中以 prefix 开头的 .csv.gz 或 .csv 文件"""
+        # 与 _load_data_flex 同样的多路径搜索逻辑
+        candidates = [
+            os.path.join(os.path.dirname(__file__), '..', '..'),
+            os.getcwd(),
+        ]
+        for mount in ['/mount/src/financial-qa-assistant', '/app']:
+            if os.path.isdir(mount):
+                candidates.append(mount)
+
+        for base in candidates:
+            fin_dir = os.path.join(base, "4")
+            if not os.path.isdir(fin_dir):
+                continue
+            # 优先 .csv.gz，降级 .csv
+            for ext in ['.csv.gz', '.csv']:
+                for f in os.listdir(fin_dir):
+                    if f.startswith(prefix) and f.endswith(ext):
+                        return pd.read_csv(os.path.join(fin_dir, f), nrows=nrows)
+        raise FileNotFoundError(f"No {prefix}[.csv.gz|.csv] found in 4/")
 
     def load_all_financials(self) -> Dict[str, pd.DataFrame]:
         """加载全部三大财务报表"""
@@ -191,11 +213,8 @@ class DataLoader:
     # ---- 数据集 5: 券商研报 ----
 
     def load_research_reports(self, nrows: Optional[int] = None) -> pd.DataFrame:
-        """加载券商研报数据（5/rr_main_*.csv）
-        Returns:
-            DataFrame with ~17万 rows, 29 columns
-        """
-        df = pd.read_csv(self.cfg.research_report_path, nrows=nrows)
+        """加载券商研报数据（5/rr_main_*.csv.gz → .csv）"""
+        df = self._load_data_flex("5", "rr_main_202605281537", nrows)
 
         # 解析 sec_code|sec_name 组合字段
         if "sec_code" in df.columns and "sec_name" in df.columns:
