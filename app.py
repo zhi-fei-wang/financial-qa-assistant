@@ -127,8 +127,11 @@ with st.sidebar:
         st.session_state.turn_count = 0
         st.rerun()
 
-    # 快捷查询
+    # 版本号
     st.markdown("---")
+    st.markdown(f"<div style='font-size:0.7rem;color:#999;text-align:center'>v2.3.0</div>", unsafe_allow_html=True)
+
+    # 快捷查询
     st.markdown("### ⚡ 快捷查询")
     quick_queries = [
         "贵州茅台(600519)的财务状况如何？",
