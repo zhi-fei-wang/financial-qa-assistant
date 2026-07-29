@@ -72,7 +72,16 @@ class DataLoader:
 
     def load_shareholder_data(self, nrows: Optional[int] = None) -> pd.DataFrame:
         """加载股东持股数据（优先 .csv.gz → .csv → .xlsx）"""
-        return self._load_data_flex("2", "clean", nrows, has_excel=True)
+        df = self._load_data_flex("2", "clean", nrows, has_excel=True)
+        # 后处理
+        if "s_info_windcode" in df.columns:
+            df["stock_code"] = df["s_info_windcode"].apply(self._normalize_stock_code)
+        for col in ["ann_dt", "s_holder_enddate"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col].astype(str), format='%Y%m%d', errors="coerce")
+        if "report_period" in df.columns:
+            df["report_period"] = df["report_period"].astype(str)
+        return df
 
         # 统一股票代码格式: 补足6位数字
         if "s_info_windcode" in df.columns:
