@@ -248,6 +248,7 @@ class FinancialAgent:
 - 用户问"主力资金/资金流向/龙虎榜/换手率/涨停"等行情类问题 → 先调 get_stock_price
 - 如果行情工具返回"无实时数据" → **不要放弃**，尝试查财报(query_financial_statement)、股东(control_summary)、公告(search_news)
 - 用户问财务/营收/利润/现金流 → query_financial_statement（务必传 statement_type；问"最新/最近"时不要指定report_period，工具会自动取最新）
+- **财务状况/经营情况类问题（无具体年份）**: 必须至少查最近2-3年数据做对比，不能只查一年。先不指定report_period看overview有哪些年份，然后逐年查询，最后给出趋势变化。
 - 用户问股东/持股/股权 → control_summary 或 equity_penetration
 - 用户问违规/处罚/公告 → search_news
 - 用户问风险/造假/排雷 → financial_anomaly_check
