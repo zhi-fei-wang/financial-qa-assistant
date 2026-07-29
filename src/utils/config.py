@@ -56,13 +56,20 @@ class DataConfig:
 
     def __post_init__(self):
         data_dir = os.path.join(self.base_dir, "14-知识图谱与智能推荐赛道-东吴证券-基于 Agentic AI 的金融长上下文推理、图谱穿透与财报反欺诈智能问答算法探索")
-        # Fallback: try the flat structure
         if not os.path.exists(data_dir):
             data_dir = self.base_dir
 
-        self.qa_test_path = os.path.join(data_dir, "1", "clean.xlsx")
-        self.shareholder_path = os.path.join(data_dir, "2", "clean.xlsx")
-        self.announcement_path = os.path.join(data_dir, "3", "clean.xlsx")
+        # 优先 .csv / .csv.gz，降级 .xlsx（Streamlit Cloud 部署只含 gz）
+        def _find(path: str, *names):
+            for name in names:
+                full = os.path.join(data_dir, path, name)
+                if os.path.exists(full):
+                    return full
+            return os.path.join(data_dir, path, names[-1])  # fallback
+
+        self.qa_test_path = _find("1", "clean.csv", "clean.xlsx")
+        self.shareholder_path = _find("2", "clean.csv.gz", "clean.csv", "clean.xlsx")
+        self.announcement_path = _find("3", "clean.csv.gz", "clean.csv", "clean.xlsx")
         # 4/ financial CSVs — find by pattern (filenames contain timestamps)
         fin_dir = os.path.join(data_dir, "4")
         if os.path.exists(fin_dir):
