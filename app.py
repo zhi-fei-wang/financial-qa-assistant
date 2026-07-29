@@ -70,6 +70,16 @@ def init_agent():
     import os, time
     status = st.status("正在初始化系统...", expanded=True)
 
+    # 调试: 列出服务器文件结构
+    cwd = os.getcwd()
+    status.write(f"📂 CWD: {cwd}")
+    for d in ["2", "3", "4", "5"]:
+        dpath = os.path.join(cwd, d)
+        if os.path.isdir(dpath):
+            status.write(f"   {d}/: {os.listdir(dpath)[:5]}")
+        else:
+            status.write(f"   {d}/: NOT FOUND")
+
     cache_path = os.path.join(os.path.dirname(__file__), ".cache", "stock_graph.pkl")
     if os.path.exists(cache_path):
         status.write(f"📦 股权图谱缓存就绪 ({os.path.getsize(cache_path)/1e6:.1f} MB)")

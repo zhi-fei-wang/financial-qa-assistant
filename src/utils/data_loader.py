@@ -20,17 +20,30 @@ class DataLoader:
         self.cfg = get_config().data
 
     def _load_data_flex(self, folder: str, stem: str, nrows=None, has_excel=False):
-        """弹性加载: .csv.gz → .csv → .xlsx（Streamlit Cloud 兼容）"""
-        base = os.path.join(os.path.dirname(__file__), '..', '..', folder)
-        for name in [f"{stem}.csv.gz", f"{stem}.csv"]:
-            path = os.path.join(base, name)
-            if os.path.exists(path):
-                return pd.read_csv(path, nrows=nrows)
-        if has_excel:
-            xlsx_path = os.path.join(base, f"{stem}.xlsx")
-            if os.path.exists(xlsx_path):
-                return pd.read_excel(xlsx_path, nrows=nrows)
-        raise FileNotFoundError(f"No {stem}.[csv.gz|csv|xlsx] in {base}")
+        """弹性加载: .csv.gz → .csv → .xlsx（本地 + Streamlit Cloud 兼容）"""
+        # 尝试多个可能的项目根目录
+        candidates = []
+        # 1. 从 __file__ 推算 (开发环境)
+        candidates.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+        # 2. 从当前工作目录 (Streamlit Cloud: /mount/src/financial-qa-assistant)
+        candidates.append(os.getcwd())
+        # 3. 常见 Streamlit Cloud 挂载点
+        for mount in ['/mount/src/financial-qa-assistant', '/app']:
+            if os.path.isdir(mount):
+                candidates.append(mount)
+
+        for base in candidates:
+            base = os.path.join(base, folder)
+            for name in [f"{stem}.csv.gz", f"{stem}.csv"]:
+                path = os.path.join(base, name)
+                if os.path.exists(path):
+                    return pd.read_csv(path, nrows=nrows)
+            if has_excel:
+                xlsx_path = os.path.join(base, f"{stem}.xlsx")
+                if os.path.exists(xlsx_path):
+                    return pd.read_excel(xlsx_path, nrows=nrows)
+
+        raise FileNotFoundError(f"No {stem}.[csv.gz|csv|xlsx] in any of: {candidates}")
 
     @staticmethod
     def _read_csv_smart(path: str, **kwargs) -> pd.DataFrame:
