@@ -168,35 +168,33 @@ class ToolExecutor:
                     matched = pd.DataFrame()
 
                 if len(matched) > 0:
-                    # 策略：优先返回最新期，除非 LLM 指定了具体可匹配的报告期
                     requested_period = params.get("report_period", "")
-                    rp_str = ""
-
-                    # 总是排序取最新
                     all_matched = matched.sort_values("report_period", ascending=False)
-                    latest = all_matched.iloc[0]
+                    rp_str = ""
+                    raw = None
 
-                    # 如果指定了具体报告期，尝试匹配
+                    # 如果指定了具体报告期，精准匹配
                     if requested_period and requested_period.strip():
                         rp_clean = requested_period.replace("Q1","0331").replace("Q2","0630").replace("Q3","0930").replace("Q4","1231")
                         if len(rp_clean) == 4:
                             rp_clean = rp_clean + "1231"
                         period_match = all_matched[all_matched["report_period"].astype(str).str.startswith(rp_clean[:6])]
                         if len(period_match) > 0:
-                            candidate = period_match.iloc[0]
-                            # 异常检测：营收远小于成本 → LLM可能猜错了期，回退最新
-                            rev = candidate.get("tot_oper_rev", 0) or 0
-                            cost = candidate.get("tot_oper_cost", 0) or 0
+                            latest = period_match.iloc[0]
+                            rev = latest.get("tot_oper_rev", 0) or 0
+                            cost = latest.get("tot_oper_cost", 0) or 0
                             if rev > 0 and cost > 0 and rev < cost / 5:
-                                # 数据异常，用最新期
-                                pass  # keep latest
-                            else:
-                                latest = candidate
-                    raw = latest.to_dict()
+                                latest = all_matched.iloc[0]
+                            raw = latest.to_dict()
+                        else:
+                            raw = all_matched.iloc[0].to_dict()
+                    else:
+                        # 未指定报告期 → 返回最新期用于摘要
+                        raw = all_matched.iloc[0].to_dict()
 
                     # 修正 report_period 显示
-                    rp = raw.get("report_period", "")
-                    if not rp_str:
+                    if raw:
+                        rp = raw.get("report_period", "")
                         try:
                             if hasattr(rp, 'strftime'):
                                 rp_str = rp.strftime('%Y%m%d')
@@ -280,15 +278,55 @@ class ToolExecutor:
                     else:
                         overview_lines.append("(无数据)")
 
-                    # 生成 LLM 友好的 rendered 文本 — overview 前置
+                    # === 多期对比表（未指定年份时，一次返回所有期） ===
+                    multi_year_lines = []
+                    if not requested_period or not requested_period.strip():
+                        year_cols = {
+                            "income": ["tot_oper_rev", "net_profit_excl_min_int_inc",
+                                       "less_oper_cost", "oper_profit"],
+                            "balance_sheet": ["tot_assets", "tot_liab", "inventories",
+                                              "monetary_cap", "tot_shrhdr_eqy_incl_min_int"],
+                            "cashflow": ["net_cash_flows_oper_act", "net_cash_flows_inv_act",
+                                         "net_cash_flows_fnc_act", "cash_cash_equ_end_period"],
+                        }.get(statement_type, [])
+                        year_cols = [c for c in year_cols if c in all_matched.columns]
+                        if year_cols and len(all_matched) >= 2:
+                            multi_year_lines.append("\n## 📊 全报告期对比表\n")
+                            header = "| 报告期 |" + "|".join(FIELD_CN.get(c, c) for c in year_cols) + "| 类型 |"
+                            sep = "|" + "|".join("------" for _ in range(len(year_cols)+2)) + "|"
+                            multi_year_lines.append(header)
+                            multi_year_lines.append(sep)
+                            for _, r in all_matched.iterrows():
+                                rp_v = str(r["report_period"])
+                                tag = ""
+                                if rp_v.endswith("1231"): tag = "年报"
+                                elif rp_v.endswith("0630"): tag = "中报"
+                                elif rp_v.endswith("0331"): tag = "Q1"
+                                elif rp_v.endswith("0930"): tag = "Q3"
+                                vals = []
+                                for c in year_cols:
+                                    v = r.get(c)
+                                    if v and pd.notna(v) and float(v) != 0:
+                                        v = float(v)
+                                        if abs(v) >= 1e8: vals.append(f"{v/1e8:.2f}亿")
+                                        elif abs(v) >= 1e4: vals.append(f"{v/1e4:.0f}万")
+                                        else: vals.append(f"{v:,.0f}")
+                                    else: vals.append("-")
+                                multi_year_lines.append("| " + rp_v + " |" + "|".join(vals) + f"| {tag} |")
+                            multi_year_lines.append("")
+
+                    # 生成 LLM 友好的 rendered 文本 — 多期对比表在最前面
                     rendered_lines = [
                         "",
                         "---",
                         f"数据集: 真实财务报表 (4/{statement_type}.csv)",
                         f"股票代码: {stock_code}",
-                        f"指定报告期: {rp_str}",
+                        f"最新报告期: {rp_str}",
                         "",
                     ]
+                    # 插入多期对比表
+                    if multi_year_lines:
+                        rendered_lines = multi_year_lines + rendered_lines
                     for k, v in summary.items():
                         if k not in ("stock_code", "report_period") and v is not None:
                             label = FIELD_CN.get(k, k)
