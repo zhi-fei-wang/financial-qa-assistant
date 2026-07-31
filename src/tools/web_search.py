@@ -7,102 +7,112 @@
 结果标注 "web" 来源，与数据库数据明确区分。
 """
 
+import json
 import re
 import urllib.request
 import urllib.parse
 import urllib.error
-from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
 from .base import BaseTool, register_tool_class
 
 
-class _DuckDuckGoParser(HTMLParser):
-    """解析 DuckDuckGo HTML 搜索结果"""
-
-    def __init__(self):
-        super().__init__()
-        self.results: List[Dict[str, str]] = []
-        self._current: Dict[str, str] = {}
-        self._in_result = False
-        self._in_link = False
-        self._in_snippet = False
-        self._text_buf = ""
-
-    def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
-        cls = attrs_dict.get("class", "")
-
-        if tag == "div" and "result" in cls:
-            self._in_result = True
-            self._current = {}
-
-        if self._in_result:
-            if tag == "a" and "result__a" in cls:
-                self._in_link = True
-                self._current["url"] = attrs_dict.get("href", "")
-            elif tag == "a" and "result__snippet" in cls:
-                self._in_snippet = True
-
-    def handle_endtag(self, tag):
-        if self._in_result and tag == "div":
-            if self._current.get("title"):
-                self.results.append(dict(self._current))
-            self._in_result = False
-            self._current = {}
-        if tag == "a":
-            self._in_link = False
-            self._in_snippet = False
-
-    def handle_data(self, data):
-        if self._in_result and self._in_link:
-            self._current["title"] = (self._current.get("title", "") + data).strip()
-        elif self._in_result and self._in_snippet:
-            self._current["snippet"] = (self._current.get("snippet", "") + data).strip()
 
 
-def _search_duckduckgo(query: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """DuckDuckGo HTML 搜索，免费无限制。"""
-    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    )
+def _search_duckduckgo_api(query: str) -> List[Dict[str, str]]:
+    """DuckDuckGo Instant Answer API (JSON, 更可靠)."""
+    url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+        "q": query, "format": "json", "no_html": "1", "skip_disambig": "1",
+    })
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-        parser = _DuckDuckGoParser()
-        parser.feed(html)
-        return parser.results[:max_results]
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        results = []
+        # Abstract
+        abstract = data.get("Abstract", "") or data.get("AbstractText", "")
+        if abstract:
+            results.append({
+                "title": data.get("Heading", query),
+                "snippet": abstract[:300],
+                "url": data.get("AbstractURL", data.get("AbstractSource", "")),
+            })
+        # Related topics
+        for topic in data.get("RelatedTopics", [])[:4]:
+            if isinstance(topic, dict):
+                results.append({
+                    "title": topic.get("Text", "")[:100] or topic.get("FirstURL", ""),
+                    "snippet": topic.get("Text", "")[:300],
+                    "url": topic.get("FirstURL", ""),
+                })
+        return results
     except Exception as e:
-        print(f"[WebSearch] DuckDuckGo search failed: {e}")
+        print(f"[WebSearch] DDG API failed: {e}")
         return []
+
+
+def _search_bing(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Bing HTML 搜索（国内可访问）。"""
+    url = "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query}, quote_via=urllib.parse.quote)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"[WebSearch] Bing failed: {e}")
+        return []
+
+    results = []
+    # 提取 h2 中 a 标签的链接和标题
+    links = re.findall(
+        r'<h2[^>]*>.*?<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+        html, re.DOTALL
+    )
+    # 提取摘要
+    snippets = re.findall(
+        r'<p[^>]*>(.*?)</p>', html, re.DOTALL
+    )
+
+    for i, (href, title_raw) in enumerate(links[:max_results]):
+        title = re.sub(r'<[^>]+>', '', title_raw).strip()
+        snippet = ""
+        if i < len(snippets):
+            snippet = re.sub(r'<[^>]+>', '', snippets[i]).strip()
+        if title and len(title) > 3:
+            results.append({
+                "title": title[:120],
+                "snippet": snippet[:300],
+                "url": href,
+            })
+    return results
 
 
 def _search_web(query: str, max_results: int = 5, finance_boost: bool = True) -> Dict[str, Any]:
     """
-    执行联网搜索。
-
-    Args:
-        query: 搜索关键词
-        max_results: 最大返回数
-        finance_boost: 是否添加金融搜索增强词
-
-    Returns:
-        结构化搜索结果
+    执行联网搜索。Bing 优先（国内可用），DuckDuckGo API 备选。
     """
-    # 金融搜索增强
     if finance_boost:
         enhanced = f"{query} 金融 财经"
     else:
         enhanced = query
 
-    results = _search_duckduckgo(enhanced, max_results)
+    # 第一通道: Bing（国内可直接访问）
+    results = _search_bing(enhanced, max_results)
+    search_engine = "Bing"
+
+    # 第二通道: DuckDuckGo API（海外网络备选）
+    if not results:
+        results = _search_duckduckgo_api(enhanced)
+        search_engine = "DuckDuckGo API"
 
     # 渲染 Markdown
     rendered_lines = [
         "## 🌐 联网搜索结果\n",
         f"搜索关键词: {query}",
+        f"搜索引擎: {search_engine}",
         f"结果数: {len(results)}\n",
     ]
     for i, r in enumerate(results, 1):
