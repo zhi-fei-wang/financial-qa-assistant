@@ -18,6 +18,8 @@
 | **财务反欺诈** | 14 条 A/B 级勾稽规则 + 五维风险评分 + ResultEnvelope 证据驱动输出 |
 | **券商研报** | BM25 检索 55K 篇研报，支持关键词/股票/行业过滤 + 评级分布 |
 | **事件脉络** | Louvain 聚类 + 两层去重 + 因果推理 + 股权-舆情时间线对齐 |
+| **联网搜索** | 概念/方法类问题 + DB 无数据时 DuckDuckGo 联网兜底 v2.5 |
+| **用户上传数据** | 拖拽 CSV/Excel/TXT/MD → Graph+RAG 索引，DB 优先 v2.6 |
 | **诚实降级** | 无实时行情数据时诚实告知 + 自动补充财报/股东/公告替代数据 |
 
 ### 数据集（5 个 A 股脱敏数据，2020~2026）
@@ -211,6 +213,8 @@ python smart_eval.py                 # 全量 1,410 条
 | 9 | `multi_period_analysis` | 多期趋势分析 | 4/ | v1.0 |
 | 10 | `search_reports` | 券商研报 BM25 检索 | 5/ | v2.2 |
 | 11 | `search_reports_by_stock` | 按股票查研报 + 评级分布 | 5/ | v2.2 |
+| 12 | `web_search` | DuckDuckGo 联网搜索（概念/方法/实时） | Web | v2.5 |
+| 13 | `uploaded_data` | 用户上传文件查询（CSV/Excel/TXT/MD） | 用户文件 | v2.6 |
 
 ---
 
@@ -224,6 +228,8 @@ python smart_eval.py                 # 全量 1,410 条
 | v2.2 | 07-29 | 研报检索 P0、量化评测 P1、OpenIE 抽取 P2、因果推理 P3、Neo4j+Vector P4 |
 | v2.3 | 07-29 | 多期财务对比、版本号显示、多 LLM 提供商、快速路径 |
 | v2.4 | 07-29 | 工具内嵌多期对比表、Streamlit Cloud 部署、数据 gzip 压缩 |
+| v2.5 | 07-31 | BaseTool 插件化（1 文件 = 1 工具）、新增 web_search 联网搜索 |
+| v2.6 | 07-31 | 用户上传数据（Graph+RAG）、DB→上传→Web 三级优先级、数据矛盾检测 |
 
 ---
 

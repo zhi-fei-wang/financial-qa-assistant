@@ -4,93 +4,52 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**东吴证券 · 金融智能问答助手** — 面向 ToC 金融信息服务的 Agentic AI 系统。
-第五届中国研究生金融科技创新大赛「揭榜挂帅」赛题。
+This is a competition dataset for the **"第五届中国研究生金融科技创新大赛" — 东吴证券赛题**. The challenge is to build an Agentic AI system for financial long-context reasoning, equity penetration graph analysis, and financial statement fraud detection. No code has been written yet — this is a data-only project.
 
-- **版本**: v2.6.0
-- **架构**: 三层 Agentic AI（记忆层 + 路由层 + 执行层）
-- **工具系统**: BaseTool 插件化（13 个 Tool，新增工具只需 1 个文件）
-- **UI**: Streamlit (app.py)
-- **LLM**: DeepSeek V3 (deepseek-chat)，OpenAI 兼容接口
-
-## Key Architecture Decisions
-
-### Tool Plugin System (v2.5+)
-- All tools inherit from `src/tools/base.py:BaseTool`
-- New tool = 1 file with `@register_tool_class` decorator
-- Auto-registration via `ToolRegistry.register_from_class()`
-- Tool metadata, routing, execution, prompts all self-contained in one class
-
-### Data Priority (v2.6+)
-DB → Uploaded Files → Web Search (three-tier fallback)
-Conflict detection when DB and upload disagree
-
-### Memory System
-- Working: last 20 turns
-- Short-term: NetworkX graph (9 node types, 6 edge types)
-- Long-term: Leiden community detection + LLM summaries
-- Source labeling: turns tagged with `source_type` (database/uploaded_file/web_search)
-
-## Project Structure
+## Dataset Structure
 
 ```
-src/
-├── memory/     # Memory system (8 modules)
-├── router/     # Router + ReAct loop (7 modules)
-├── graph/      # Equity graph system (8 modules)
-├── finance/    # Financial analysis (4 modules)
-├── tools/      # Tool plugins (12 modules, BaseTool pattern)
-│   ├── base.py             # BaseTool ABC
-│   ├── equity_graph.py     # Equity penetration + events + control
-│   ├── financial_anomaly.py # Anomaly detection + multi-period
-│   ├── research_reports.py  # Research report search
-│   ├── query_financial.py   # Financial statement query
-│   ├── financial_calculator.py # Financial calculator
-│   ├── market_data.py       # Market data (honest degradation)
-│   ├── news_search.py       # News/announcement search
-│   ├── web_search.py        # DuckDuckGo web search
-│   ├── uploaded_data.py     # User-uploaded file search
-│   └── file_parser.py       # Multi-format parser + Graph + BM25
-├── llm/        # LLM client + prompt templates
-└── utils/      # Config, data loader, evaluation
-
-app.py          # Streamlit web UI
+14-知识图谱与智能推荐赛道-东吴证券-基于 Agentic AI 的金融长上下文推理、图谱穿透与财报反欺诈智能问答算法探索/
+├── 1/clean.xlsx         # 测试问答集 (1410条, 35个session)
+├── 2/clean.xlsx         # 股东持股数据 (64.6万行, 6161只股票)
+│   └── dict.txt         # 字段字典
+├── 3/clean.xlsx         # 公司公告数据 (7311条, 2585只股票)
+│   └── ditct.txt        # 字段字典+公告类型码表
+├── 4/                   # 上市公司三大财务报表CSV (~3.9万行/表)
+│   ├── asharebalancesheet.csv   # 资产负债表 (182字段)
+│   ├── asharecashflow.csv       # 现金流量表 (126字段)
+│   ├── ashareincome.csv         # 利润表 (114字段)
+│   └── *dict.txt                # 各表中文数据字典
+├── 5/                   # 券商研报数据
+│   ├── rr_main_*.csv            # ~17万行研报(含摘要文本)
+│   └── rr_main_dict.txt         # 字段字典
+└── 赛题说明.docx        # 完整赛题文档 (命题说明、技术指标、攻关任务)
 ```
 
-## Adding a New Tool
+## Data Directory Details
 
-1. Create `src/tools/my_tool.py`:
-```python
-from .base import BaseTool, register_tool_class
+| Dir | Purpose | Key Columns |
+|-----|---------|-------------|
+| **1** | 评测问答集 — Agent对话测试基准 | `session_id`, `question`, `think_flag` |
+| **2** | 股权穿透数据 — 十大股东明细 | `s_holder_name`, `s_holder_pct`, `s_holder_holdercategory`(1=个人,2=企业) |
+| **3** | 公司公告 — 违规处罚/风险提示等 | `n_info_fcode`(公告类型码), `ann_dt`, `n_info_title` |
+| **4** | 三大财务报表 — 全科目财务数据 | `S_INFO_WINDCODE`, `REPORT_PERIOD`, 100+财务科目 |
+| **5** | 券商研报摘要 — 含详细文本 | `title`, `abstract`, `rating_org`, `industry_l1/l2/l3` |
 
-@register_tool_class
-class MyTool(BaseTool):
-    name = "my_tool"
-    description = "..."
-    required_params = ["query"]
-    optional_params = []
-    intent_match = ["NEWS_EVENT"]
-    param_schema = {"query": {"description": "..."}}
-    routing_hint = "用户问X → my_tool"
-    trigger_keywords = ["关键词1", "关键词2"]
+## Competition Task Requirements (3攻关任务)
 
-    def execute(self, params, data_loader=None):
-        return {"source": "...", "rendered": "..."}
-```
+1. **长对话记忆增强与自适应路由Agent** — 0.5M+ Tokens窗口、10轮+对话、自纠错API路由
+2. **股权穿透与事件脉络推理** — 多层隐性控股链路、图谱+Agent工具化、舆情事件簇聚合
+3. **财务异象甄别与评分引擎** — 跨科目勾稽演算(存货/营收比、现金流/利润悖离等)、风险评分生成
 
-2. Register in `src/router/tool_registry.py:_register_default_tools()`:
-```python
-from ..tools.my_tool import MyTool
-self.register_from_class(MyTool)
-```
+## Technical Targets
 
-## Key Files for Common Tasks
+- 长文本问答: 关键事实召回率≥90%, API调用命中率≥92%
+- 股权穿透: 深度>3层准确率≥85%, 工具调用延迟≤5秒
+- 财报欺诈: 预警F1-Score≥85%, 报告盲评优秀率≥80%
 
-| Task | Files to modify |
-|------|----------------|
-| Add tool | `src/tools/xxx.py` + `src/router/tool_registry.py` (1 line) |
-| Add intent | `src/tools/base.py` (BaseTool.intent_match) |
-| Fix tool behavior | `src/tools/xxx.py:execute()` |
-| Change UI | `app.py` |
-| Update prompts | `src/llm/prompts.py` |
-| Agent loop logic | `src/router/agent_loop.py` |
+## Recommended Tools
+
+- Python (pandas, openpyxl for Excel, python-docx for DOCX)
+- Use `uv` or `pip` for dependency management
+- Use `python3 <script>` for data exploration and model building
