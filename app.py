@@ -129,7 +129,81 @@ with st.sidebar:
 
     # 版本号
     st.markdown("---")
-    st.markdown(f"<div style='font-size:0.7rem;color:#999;text-align:center'>v2.4.0</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:0.7rem;color:#999;text-align:center'>v2.6.0</div>", unsafe_allow_html=True)
+
+    # ---- 外部数据上传 ----
+    st.markdown("### 📁 外部数据")
+    st.caption("上传 CSV/Excel/TXT/MD，助手优先查数据库，无数据时查您的文件。")
+
+    uploaded = st.file_uploader(
+        "拖拽文件到此处",
+        type=["csv", "xlsx", "xls", "txt", "md"],
+        accept_multiple_files=True,
+        key="file_uploader",
+        label_visibility="collapsed",
+    )
+
+    if "uploaded_files_info" not in st.session_state:
+        st.session_state.uploaded_files_info = []
+
+    if uploaded:
+        from src.tools.file_parser import UploadIndex
+        from src.tools.uploaded_data import get_upload_index
+        import tempfile
+
+        upload_index = get_upload_index()
+        current_names = {f["name"] for f in st.session_state.uploaded_files_info}
+
+        for file in uploaded:
+            if file.name in current_names:
+                continue
+            suffix = "." + file.name.rsplit(".", 1)[-1] if "." in file.name else ""
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(file.getvalue())
+                tmp_path = tmp.name
+            file_type = file.name.rsplit(".", 1)[-1] if "." in file.name else "txt"
+            try:
+                record = upload_index.add_file(tmp_path, file_type)
+                st.session_state.uploaded_files_info.append({
+                    "name": file.name, "size": f"{file.size/1024:.1f}KB",
+                    "file_type": file_type, "tmp_path": tmp_path,
+                    "rows": record.row_count,
+                })
+            except Exception as e:
+                st.error(f"解析 {file.name} 失败: {e}")
+        st.rerun()
+
+    if st.session_state.uploaded_files_info:
+        st.markdown("**已上传:**")
+        for i, f_info in enumerate(st.session_state.uploaded_files_info):
+            cols = st.columns([5, 2, 1])
+            cols[0].caption(f"📄 {f_info['name']} ({f_info['size']}, {f_info['rows']}行)")
+            badge = {"csv":"🟢","xlsx":"🟦","xls":"🟦","txt":"⬜","md":"🟨"}.get(f_info["file_type"],"📎")
+            cols[1].caption(f"{badge} {f_info['file_type']}")
+            if cols[2].button("✕", key=f"del_{i}", help=f"删除 {f_info['name']}"):
+                from src.tools.uploaded_data import get_upload_index
+                upload_index = get_upload_index()
+                upload_index.remove_file(f_info["name"])
+                try:
+                    os.unlink(f_info.get("tmp_path", ""))
+                except Exception:
+                    pass
+                st.session_state.uploaded_files_info.pop(i)
+                st.rerun()
+
+        if st.button("🗑️ 清空全部", use_container_width=True):
+            from src.tools.uploaded_data import get_upload_index
+            upload_index = get_upload_index()
+            upload_index.clear()
+            for f_info in st.session_state.uploaded_files_info:
+                try:
+                    os.unlink(f_info.get("tmp_path", ""))
+                except Exception:
+                    pass
+            st.session_state.uploaded_files_info = []
+            st.rerun()
+
+    st.markdown("---")
 
     # 快捷查询
     st.markdown("### ⚡ 快捷查询")

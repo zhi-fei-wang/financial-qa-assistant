@@ -1,115 +1,101 @@
-"""新闻/舆情检索工具"""
-
+"""新闻/舆情检索工具 — BaseTool 插件"""
 from typing import Any, Dict, List, Optional
 
+from .base import BaseTool, register_tool_class
 from ..utils.data_loader import DataLoader
 
 
-class NewsSearchTool:
-    """
-    新闻舆情检索工具。
-    从数据集 3/ (公司公告) 和 5/ (研报) 中检索相关内容。
-    """
+@register_tool_class
+class NewsSearchTool(BaseTool):
+    """从公告/研报数据集中检索相关新闻舆情。"""
 
-    def __init__(self, loader: Optional[DataLoader] = None):
-        self.loader = loader or DataLoader()
-        self._announcements_df = None
-        self._reports_df = None
-        self._report_column_name: Optional[str] = None
+    name = "search_news"
+    description = "搜索与标的相关的新闻舆情、违规公告、风险提示等。支持关键词+股票代码过滤。"
+    required_params = ["query"]
+    optional_params = ["stock_code", "date_range", "source_filter", "max_results"]
+    intent_match = ["NEWS_EVENT"]
+    sub_intent = "VIOLATION_CHECK"
+    param_schema = {
+        "query": {"description": "搜索关键词"},
+        "stock_code": {"description": "关联股票代码"},
+        "date_range": {"description": "日期范围: 30d/90d/1y"},
+        "max_results": {"description": "最大返回条数，默认20"},
+    }
+    routing_hint = "用户问违规/处罚/风险/公告/监管 → search_news"
+    trigger_keywords = [
+        "违规", "处罚", "公告", "监管", "监管措施", "风险提示",
+        "舆情", "事件", "利好", "利空", "被查", "被罚",
+    ]
+    max_retries = 2
+    timeout_sec = 8
 
-    def _load_data(self):
-        """延迟加载数据"""
-        if self._announcements_df is None:
-            try:
-                self._announcements_df = self.loader.load_announcements()
-            except Exception as e:
-                print(f"[NewsSearch] Announcements load error: {e}")
+    def execute(self, params: Dict[str, Any], data_loader: Any = None) -> Dict[str, Any]:
+        query = params.get("query", "")
+        stock_code = params.get("stock_code", "")
+        max_results = int(params.get("max_results", 20))
 
-        if self._reports_df is None:
-            try:
-                self._reports_df = self.loader.load_research_reports()
-            except Exception as e:
-                print(f"[NewsSearch] Reports load error: {e}")
+        loader = data_loader or DataLoader()
 
-    def search(
-        self,
-        query: str,
-        stock_code: Optional[str] = None,
-        date_range: Optional[str] = None,
-        max_results: int = 20,
-    ) -> Dict[str, Any]:
-        """
-        搜索与标的相关的新闻/公告/研报。
+        try:
+            df = loader.load_announcements()
 
-        Args:
-            query: 搜索关键词
-            stock_code: 关联股票代码
-            date_range: 日期范围 (未实现，预留)
-            max_results: 最大返回条数
+            # 按 stock_code 过滤
+            matched = df
+            if stock_code:
+                if "stock_code" in df.columns:
+                    matched = df[df["stock_code"] == stock_code]
+                elif "s_info_windcode" in df.columns:
+                    matched = df[df["s_info_windcode"].str.contains(stock_code, na=False)]
 
-        Returns:
-            {"query": ..., "articles": [...], "total": ...}
-        """
-        self._load_data()
-        articles = []
+            # 关键词标题匹配
+            if query and "n_info_title" in matched.columns:
+                kw_matched = matched[matched["n_info_title"].str.contains(query, na=False)]
+                if len(kw_matched) > 0:
+                    matched = kw_matched
 
-        # 1. 从公告中搜索
-        if self._announcements_df is not None:
-            df = self._announcements_df
-            if stock_code and "stock_code" in df.columns:
-                df = df[df["stock_code"] == self._normalize(stock_code)]
+            if len(matched) > 0:
+                results = []
+                for _, row in matched.head(max_results).iterrows():
+                    results.append({
+                        "title": str(row.get("n_info_title", "")),
+                        "date": str(row.get("ann_dt", "")),
+                        "stock_code": str(row.get("stock_code", row.get("s_info_windcode", ""))),
+                        "source": "公司公告",
+                    })
 
-            if "n_info_title" in df.columns:
-                query_terms = query.lower().split()
-                for _, row in df.iterrows():
-                    title = str(row.get("n_info_title", ""))
-                    # 关键词匹配
-                    if any(term.lower() in title.lower() for term in query_terms) or (stock_code and len(df) <= 50):
-                        articles.append({
-                            "title": title,
-                            "date": str(row.get("ann_dt", "")),
-                            "stock_code": str(row.get("stock_code", stock_code or "")),
-                            "source": "公司公告",
-                        })
-                        if len(articles) >= max_results:
-                            break
+                rendered_lines = [
+                    f"## 新闻/公告检索",
+                    f"查询: {query}",
+                    f"股票: {stock_code or 'ALL'}",
+                    f"结果: {len(results)} 条",
+                    "",
+                ]
+                for i, r in enumerate(results):
+                    rendered_lines.append(f"{i+1}. **{r['title'][:80]}** | {r['date']}")
 
-        # 2. 从研报中搜索
-        if self._reports_df is not None and len(articles) < max_results:
-            df = self._reports_df
-
-            if "title" in df.columns and "abstract" in df.columns:
-                query_terms = query.lower().split()
-                for _, row in df.iterrows():
-                    title = str(row.get("title", ""))
-                    abstract = str(row.get("abstract", ""))
-                    text = title + " " + abstract
-                    if any(term.lower() in text.lower() for term in query_terms):
-                        articles.append({
-                            "title": title,
-                            "date": str(row.get("write_date", row.get("publish_date", ""))),
-                            "org": str(row.get("org_name", "")),
-                            "abstract": abstract[:200],
-                            "source": "券商研报",
-                        })
-                        if len(articles) >= max_results:
-                            break
-
-        return {
-            "query": query,
-            "stock_code": stock_code,
-            "total": len(articles),
-            "articles": articles[:max_results],
-            "source": "dataset",
-        }
-
-    @staticmethod
-    def _normalize(code: str) -> str:
-        import pandas as pd
-        if pd.isna(code):
-            return ""
-        code = str(code).strip().upper()
-        for suffix in [".SH", ".SZ", ".BJ"]:
-            if code.endswith(suffix):
-                code = code[:-len(suffix)]
-        return code.zfill(6)
+                return {
+                    "query": query,
+                    "stock_code": stock_code or "ALL",
+                    "total": len(results),
+                    "articles": results,
+                    "rendered": "\n".join(rendered_lines),
+                    "source": "dataset",
+                }
+            else:
+                return {
+                    "query": query,
+                    "stock_code": stock_code or "ALL",
+                    "total": 0,
+                    "articles": [],
+                    "rendered": f"## 新闻/公告检索\n未找到相关公告（查询: {query}, 股票: {stock_code or 'ALL'}）。\n建议尝试更宽泛的关键词或去掉股票限制。",
+                    "source": "dataset",
+                }
+        except Exception as e:
+            return {
+                "query": query,
+                "stock_code": stock_code or "ALL",
+                "total": 0,
+                "articles": [],
+                "rendered": f"新闻检索出错: {e}",
+                "source": "error",
+            }

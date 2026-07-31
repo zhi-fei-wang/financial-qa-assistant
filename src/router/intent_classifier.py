@@ -40,30 +40,12 @@ class IntentClassifier:
     """
     金融对话意图分类器。
     支持 LLM 分类 + Few-shot 增强。
+
+    意图→工具映射从 ToolRegistry 动态获取，不再硬编码。
+    只有 statement_type 推断关键词因与特定报表类型绑定而保留。
     """
 
-    # 意图与工具的映射（含子意图）
-    INTENT_TOOL_MAP = {
-        "MARKET_DATA": "get_stock_price",
-        "FINANCIAL_ANALYSIS": "query_financial_statement",
-        "EQUITY_PENETRATION": "equity_penetration",
-        "NEWS_EVENT": "search_news",
-        "CALCULATION": "financial_calculator",
-        "CHITCHAT": None,
-    }
-
-    # 子意图 → 工具覆盖
-    SUB_INTENT_TOOL_MAP = {
-        "ANOMALY_CHECK": "financial_anomaly_check",
-        "STATEMENT_QUERY": "query_financial_statement",
-        "COMPARISON": "multi_period_analysis",
-        "VIOLATION_CHECK": "search_news",
-        "EVENT_TRACE": "event_trace",
-        "PENETRATION": "equity_penetration",
-        "SHAREHOLDER_QUERY": "control_summary",
-    }
-
-    # statement_type 关键词推断
+    # statement_type 关键词推断（报表类型绑定，不属于任何单一工具）
     INCOME_KEYWORDS = [
         "营收", "营业收入", "营业总收入", "利润", "净利润", "毛利", "净利",
         "ROE", "ROA", "EPS", "每股收益", "收入", "成本", "费用",
@@ -79,9 +61,20 @@ class IntentClassifier:
         "经营现金流", "自由现金流",
     ]
 
-    def __init__(self, use_llm: bool = True):
+    def __init__(self, use_llm: bool = True, tool_registry=None):
         self.llm = get_llm_client() if use_llm else None
         self.use_llm = use_llm
+        self._tool_registry = tool_registry
+
+        # 从 registry 动态生成意图映射（有 registry 时优先，否则用默认值）
+        if tool_registry:
+            self.INTENT_TOOL_MAP = tool_registry.get_intent_tool_map()
+            self.SUB_INTENT_TOOL_MAP = tool_registry.get_sub_intent_tool_map()
+            self.INTENT_KEYWORDS = tool_registry.get_keywords_by_intent()
+        else:
+            self.INTENT_TOOL_MAP = {}
+            self.SUB_INTENT_TOOL_MAP = {}
+            self.INTENT_KEYWORDS = {}
 
     def classify(
         self,
@@ -159,69 +152,74 @@ class IntentClassifier:
             if inferred_st:
                 result.params_hint["statement_type"] = inferred_st
 
-        # 2. 关键词强信号覆盖 intent（当 LLM 明显分错时）
-        violation_kw = ["违规", "处罚", "监管", "监管措施", "被查", "被罚", "违纪"]
-        announcement_kw = ["公告", "公报"]
-        equity_kw = ["股权穿透", "股权结构", "控股链", "实控人", "实际控制人", "穿透", "股东穿透"]
-
-        if any(kw in user_query for kw in violation_kw + announcement_kw):
-            if result.intent not in ("NEWS_EVENT", "EQUITY_PENETRATION"):
-                result.intent = "NEWS_EVENT"
-                result.sub_intent = "VIOLATION_CHECK"
-                result.suggested_tool = "search_news"
-                result.confidence = max(result.confidence, 0.85)
-                result.reasoning += " [关键词覆盖: 违规/公告]"
-
-        if any(kw in user_query for kw in equity_kw):
-            if result.intent != "EQUITY_PENETRATION":
-                result.intent = "EQUITY_PENETRATION"
-                result.suggested_tool = "equity_penetration"
-                result.confidence = max(result.confidence, 0.85)
-                result.reasoning += " [关键词覆盖: 股权穿透]"
+        # 2. 关键词强信号覆盖 intent（从 registry 获取动态关键词，硬编码兜底）
+        kw_intents = self.INTENT_KEYWORDS if self.INTENT_KEYWORDS else {
+            "NEWS_EVENT": ["违规", "处罚", "监管", "监管措施", "被查", "被罚", "违纪", "公告", "公报"],
+            "EQUITY_PENETRATION": ["股权穿透", "股权结构", "控股链", "实控人", "实际控制人", "穿透", "股东穿透"],
+        }
+        for intent, keywords in kw_intents.items():
+            if any(k in user_query for k in keywords):
+                if result.intent != intent and result.intent != "EQUITY_PENETRATION":
+                    result.intent = intent
+                    result.suggested_tool = self.INTENT_TOOL_MAP.get(intent, result.suggested_tool)
+                    result.confidence = max(result.confidence, 0.85)
+                    result.reasoning += f" [关键词覆盖: {intent}]"
 
         # 3. 覆盖 suggested_tool（子意图优先）
-        if result.sub_intent and result.sub_intent in self.SUB_INTENT_TOOL_MAP:
-            result.suggested_tool = self.SUB_INTENT_TOOL_MAP[result.sub_intent]
+        if result.sub_intent and self.SUB_INTENT_TOOL_MAP:
+            result.suggested_tool = self.SUB_INTENT_TOOL_MAP.get(
+                result.sub_intent, result.suggested_tool
+            )
 
         return result
 
     def _rule_classify(self, user_query: str) -> IntentResult:
-        """基于规则的意图分类（兜底）"""
+        """基于规则的意图分类（兜底）。优先使用 registry 提供的动态关键词。"""
         query = user_query.lower()
 
-        # 关键词 → (intent, suggested_tool)
+        # 动态关键词（从 registry / BaseTool.trigger_keywords 获取）
+        if self.INTENT_KEYWORDS:
+            for intent, keywords in self.INTENT_KEYWORDS.items():
+                matched_kws = [kw for kw in keywords if kw in query]
+                if matched_kws:
+                    entities = self._extract_entities_heuristic(user_query)
+                    params_hint = {}
+                    tool = self.INTENT_TOOL_MAP.get(intent, "")
+                    # 推断 statement_type
+                    if intent == "FINANCIAL_ANALYSIS":
+                        if any(k in user_query for k in self.INCOME_KEYWORDS):
+                            params_hint["statement_type"] = "income"
+                        elif any(k in user_query for k in self.CASHFLOW_KEYWORDS):
+                            params_hint["statement_type"] = "cashflow"
+                        elif any(k in user_query for k in self.BALANCE_KEYWORDS):
+                            params_hint["statement_type"] = "balance_sheet"
+                    return IntentResult(
+                        intent=intent, confidence=0.75, entities=entities,
+                        suggested_tool=tool, params_hint=params_hint,
+                        reasoning=f"关键词匹配: {matched_kws}",
+                    )
+
+        # 降级：硬编码兜底（registry 不可用时）
         keyword_intents = [
             ("EQUITY_PENETRATION", "equity_penetration", [
-                "股权穿透", "控股链", "控股结构", "实控人", "股东穿透",
-                "穿透", "持股链", "实际控制人", "控制链", "控股股东",
+                "股权穿透", "控股链", "实控人", "股东穿透", "穿透", "实际控制人", "控制链", "控股股东",
             ]),
             ("NEWS_EVENT", "search_news", [
-                "违规", "处罚", "公告", "监管", "监管措施", "风险提示",
-                "舆情", "事件", "研报", "利好", "利空",
+                "违规", "处罚", "公告", "监管", "风险提示", "舆情", "事件", "研报", "利好", "利空",
             ]),
             ("MARKET_DATA", "get_stock_price", [
-                "股价", "涨跌", "行情", "收盘", "市值", "盘口", "量比",
-                "涨幅", "跌幅", "换手率", "主力资金", "资金流向", "涨停",
-                "龙虎榜", "融资融券", "开盘价", "最高价",
+                "股价", "涨跌", "行情", "市值", "换手率", "主力资金", "资金流向", "涨停", "龙虎榜",
             ]),
             ("FINANCIAL_ANALYSIS", "query_financial_statement", [
-                "财报", "财务", "ROE", "ROA", "利润率", "存货周转",
-                "现金流", "净利润", "营收", "造假", "排雷", "疑点",
-                "资产负债", "勾稽", "粉饰", "虚增", "毛利率", "净利率",
-                "每股收益", "市盈率", "eps", "pe", "pb", "总资产",
+                "财报", "财务", "ROE", "ROA", "利润率", "净利润", "营收", "造假", "排雷", "毛利率",
             ]),
-            ("CALCULATION", "financial_calculator", [
-                "计算", "算一下", "均值", "平均", "求和",
-            ]),
+            ("CALCULATION", "financial_calculator", ["计算", "算一下", "均值", "求和"]),
         ]
-
         for intent, tool, keywords in keyword_intents:
             matched_kws = [kw for kw in keywords if kw in query]
             if matched_kws:
                 entities = self._extract_entities_heuristic(user_query)
                 params_hint = {}
-
-                # 推断 statement_type
                 if intent == "FINANCIAL_ANALYSIS":
                     if any(k in user_query for k in self.INCOME_KEYWORDS):
                         params_hint["statement_type"] = "income"
@@ -229,13 +227,9 @@ class IntentClassifier:
                         params_hint["statement_type"] = "cashflow"
                     elif any(k in user_query for k in self.BALANCE_KEYWORDS):
                         params_hint["statement_type"] = "balance_sheet"
-
                 return IntentResult(
-                    intent=intent,
-                    confidence=0.75,
-                    entities=entities,
-                    suggested_tool=tool,
-                    params_hint=params_hint,
+                    intent=intent, confidence=0.75, entities=entities,
+                    suggested_tool=tool, params_hint=params_hint,
                     reasoning=f"关键词匹配: {matched_kws}",
                 )
 

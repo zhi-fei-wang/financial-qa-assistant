@@ -12,7 +12,7 @@
 
 | 能力 | 描述 |
 |------|------|
-| **ReAct 多工具调用** | LLM 自主决策调用 11 个工具，单轮最多 5 次，Plan 计划→执行→验证 |
+| **ReAct 多工具调用** | LLM 自主决策调用 13 个工具，单轮最多 5 次，Plan 计划→执行→验证 |
 | **长对话记忆** | 三级记忆（工作/短期/长期）+ 四路多信号融合检索（图+BM25+实体+Fact）|
 | **股权穿透** | BFS 多跳 + 多信号实体匹配 + LLM 知识补全 + 带权重逻辑链条 |
 | **财务反欺诈** | 14 条 A/B 级勾稽规则 + 五维风险评分 + ResultEnvelope 证据驱动输出 |
@@ -115,7 +115,11 @@ python smart_eval.py                 # 全量 1,410 条
      ├─ multi_period_analysis      → 多期趋势
      ├─ equity_penetration         → 股权穿透（多信号匹配）
      ├─ event_trace                → 事件脉络 + 因果推理
+     ├─ web_search                 → 联网搜索（概念/方法/实时）v2.5
+     ├─ uploaded_data              → 用户上传文件查询 v2.6
      └─ get_stock_price            → 行情（诚实降级）
+  → 数据优先级: DB → 上传文件 → 联网搜索（三级降级）
+     → 数据矛盾检测 + 记忆来源标注（防污染）
   → ResultEnvelope 包装（结论 + 证据 + 置信度 + 局限）
   → JSON 泄露防御（6 层 sanitize）
   → Fact 提取 + 记忆更新（一次 LLM 调用）
@@ -149,7 +153,7 @@ python smart_eval.py                 # 全量 1,410 条
 │   │   ├── agent_loop.py           # Plan-before-ReAct 主循环 ⭐
 │   │   ├── result_envelope.py      # 证据驱动 Skill 输出 ⭐
 │   │   ├── intent_classifier.py    # 7 类意图 + 关键词修正
-│   │   ├── tool_registry.py        # 11 个 Tool 注册中心
+│   │   ├── tool_registry.py        # 13 个 Tool 注册中心（BaseTool 插件化）
 │   │   ├── tool_executor.py        # 统一执行 + 快速路径
 │   │   ├── self_correction.py      # 自纠错闭环
 │   │   └── validators.py           # 三层验证
@@ -163,13 +167,18 @@ python smart_eval.py                 # 全量 1,410 条
 │   │   ├── openie_extractor.py     # 公告/研报三元组抽取 ⭐
 │   │   └── causal_reasoner.py      # 四层因果推理 ⭐
 │   │
-│   ├── tools/                  # 可调用 Skill（7 模块）
+│   ├── tools/                  # 可调用 Tool（12 模块，BaseTool 插件化）
+│   │   ├── base.py                 # BaseTool 抽象基类 v2.5
 │   │   ├── equity_graph.py         # 股权穿透 + 事件溯源 + 控股
 │   │   ├── financial_anomaly.py    # 异象甄别 + 多期分析
 │   │   ├── research_reports.py     # 研报检索 ⭐
-│   │   ├── financial_db.py         # 财报查询
+│   │   ├── query_financial.py      # 财报查询 v2.5
+│   │   ├── financial_calculator.py # 财务计算器 v2.5
 │   │   ├── market_data.py          # 行情（诚实降级）
-│   │   └── news_search.py          # 公告舆情检索
+│   │   ├── news_search.py          # 公告舆情检索
+│   │   ├── web_search.py           # DuckDuckGo 联网搜索 v2.5
+│   │   ├── uploaded_data.py        # 用户上传文件查询 v2.6
+│   │   └── file_parser.py          # 多格式解析+图+BM25 v2.6
 │   │
 │   ├── finance/                # 财务系统（4 模块）
 │   │   ├── data_extractor.py       # 18 科目标准化
@@ -187,7 +196,7 @@ python smart_eval.py                 # 全量 1,410 条
 
 ---
 
-## 六、已注册 Tool（11 个）
+## 六、已注册 Tool（13 个，BaseTool 插件化）
 
 | # | 工具名 | 用途 | 数据源 | 版本 |
 |---|--------|------|--------|:--:|
@@ -237,4 +246,4 @@ python -c "from src.router.tool_registry import ToolRegistry; [print(f'{t.name}'
 
 ---
 
-> 📅 最后更新：2026-07-29 | 🤖 LLM: 多提供商兼容 | 🚀 已部署 Streamlit Cloud | 🏦 东吴证券 | v2.4.0
+> 📅 最后更新：2026-07-31 | 🤖 LLM: 多提供商兼容 | 🚀 已部署 Streamlit Cloud | 🏦 东吴证券 | v2.6.0

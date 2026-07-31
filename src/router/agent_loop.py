@@ -47,7 +47,9 @@ class FinancialAgent:
         self.router = SelfCorrectingRouter(
             self.tool_registry, self.tool_executor, use_llm=use_llm
         )
-        self.intent_classifier = IntentClassifier(use_llm=use_llm)
+        self.intent_classifier = IntentClassifier(
+            use_llm=use_llm, tool_registry=self.tool_registry
+        )
 
         # 对话历史
         self.conversation_history: List[Dict[str, str]] = []
@@ -98,11 +100,21 @@ class FinancialAgent:
             community_summaries=community_text,
         )
 
-        # 闲聊 → 无需工具
+        # 闲聊 → 无需工具（但概念/方法类问题需联网搜索）
         if not intent.requires_tool:
             response = self._generate_response_chat(user_query, context_text)
             response = self._sanitize_response(response)
-            self._finalize_turn(user_query, response, [], intent.intent)
+            # 概念/方法类 → 联网补充
+            if self._is_concept_or_guide_question(user_query):
+                web_data = self._execute_web_search(user_query, intent)
+                if web_data:
+                    response = self._build_hybrid_response(response, web_data)
+                    tool_results = [{"success": True, "tool_name": "web_search", "data": web_data}]
+                else:
+                    tool_results = []
+            else:
+                tool_results = []
+            self._finalize_turn(user_query, response, tool_results, intent.intent)
             return response
 
         # 低置信度 → 反问
@@ -121,27 +133,61 @@ class FinancialAgent:
         else:
             response, tool_results = self._single_tool_fallback(user_query, intent)
 
-        # === Step 3.5: 如果回复没有实际数据，自动补充查询股票基本信息 ===
+        # === Step 3.6: 检查用户上传数据（DB优先，无数据时降级到上传文件）===
         response = self._sanitize_response(response)
-        if self._is_empty_response(response) and (intent.entities or intent.params_hint.get("stock_code")):
-            stock_code = intent.params_hint.get("stock_code", "")
-            if not stock_code:
-                stock_code = intent.entities[0] if intent.entities else ""
-            supplement = self._supplement_query(stock_code)
-            if supplement:
-                response = response.rstrip() + "\n\n---\n\n" + supplement
 
-        # === Step 4: 记忆更新 ===
-        self._finalize_turn(user_query, response, tool_results, intent.intent)
+        # 检查上传数据中的相关结果（无论DB有无数据都检查，用于冲突检测）
+        upload_data = self._query_uploaded_data(user_query, intent)
+        upload_used = False
+        web_used = False
+
+        if self._is_empty_response(response):
+            # DB无数据 → 尝试上传文件
+            if upload_data:
+                response = self._build_upload_response(response, upload_data)
+                tool_results = (tool_results or []) + [{
+                    "success": True, "tool_name": "uploaded_data", "data": upload_data,
+                }]
+                upload_used = True
+            else:
+                # 上传也无数据 → 联网搜索兜底
+                if self._needs_web_search(user_query, intent, response, tool_results):
+                    web_data = self._execute_web_search(user_query, intent)
+                    if web_data:
+                        response = self._build_hybrid_response(response, web_data)
+                        tool_results = (tool_results or []) + [{
+                            "success": True, "tool_name": "web_search", "data": web_data,
+                        }]
+                        web_used = True
+        elif upload_data:
+            # DB有数据 + 上传也有数据 → 检查矛盾
+            conflicts = self._check_data_conflict(
+                response, upload_data.get("rendered", "")
+            )
+            if conflicts:
+                conflict_note = self._format_conflict_warning(conflicts)
+                response = response.rstrip() + "\n\n" + conflict_note
+            upload_used = True  # 上传数据被参考了
+
+        # === Step 4: 记忆更新（标注数据来源，防止记忆污染）===
+        source_type = "database"
+        if upload_used:
+            source_type = "uploaded_file"
+        elif web_used:
+            source_type = "web_search"
+        self._finalize_turn(user_query, response, tool_results, intent.intent,
+                           source_type=source_type)
         return response
 
-    def _finalize_turn(self, user_query, response, tool_results, intent):
+    def _finalize_turn(self, user_query, response, tool_results, intent,
+                       source_type: str = "database"):
         """收尾：记录对话历史 + 记忆更新"""
         self.memory.add_turn(
             user_query=user_query,
             agent_response=response,
-            tool_results=tool_results,
+            tool_results=tool_results or [],
             intent=intent,
+            metadata={"source_type": source_type},
         )
         self.conversation_history.append({"role": "user", "content": user_query})
         self.conversation_history.append({"role": "assistant", "content": response})
@@ -152,6 +198,8 @@ class FinancialAgent:
         empty_markers = [
             "无法提供", "无法查询", "无法获取", "不具备实时",
             "没有实时", "我无法", "系统没有", "暂无数据",
+            "时遇到问题", "调用失败", "已尝试",  # 非 LLM 路径错误
+            "抱歉，查询",  # 无数据时的通用抱歉
         ]
         # 必须有实际数字才算有数据（避免"我可以帮您查营收"这种空头支票）
         has_real_data = bool(re.search(r'\d[\d,.]*(?:\s*[亿万元%股])', text))
@@ -215,6 +263,158 @@ class FinancialAgent:
             return "\n".join(parts)
         return ""
 
+    # =========================================================================
+    # 联网搜索集成 (v2.5.0)
+    # =========================================================================
+
+    @staticmethod
+    def _is_concept_or_guide_question(user_query: str) -> bool:
+        """检测是否为概念解释或方法指导类问题。"""
+        concept_keywords = [
+            "如何", "怎么", "教程", "什么是", "概念", "定义",
+            "方法", "步骤", "流程", "开户", "交易规则",
+            "是什么意思", "怎么做", "如何操作", "如何购买",
+            "牛市", "熊市", "K线", "MACD", "市盈率", "市净率",
+        ]
+        return any(kw in user_query for kw in concept_keywords)
+
+    @staticmethod
+    def _is_time_data_missing(response: str, tool_results: list) -> bool:
+        """检测 DB 是否缺少对应时间的数据。"""
+        # 检查工具结果中的错误标记
+        for r in (tool_results or []):
+            data = r.get("data", {}) if isinstance(r, dict) else {}
+            error = data.get("error", "") if isinstance(data, dict) else ""
+            # 财务报表找不到指定报告期
+            if "未找到" in str(error) or "not found" in str(error).lower():
+                return True
+        # 检查回复内容
+        missing_markers = ["未找到", "不在数据库中", "没有该时间", "无法提供该时间段"]
+        return any(m in response for m in missing_markers)
+
+    def _needs_web_search(
+        self, user_query: str, intent, response: str, tool_results: list
+    ) -> bool:
+        """
+        判断是否需要联网搜索。规则：
+        1. 概念/方法类问题 → 联网补充
+        2. DB 无对应时间数据 → 联网
+        3. 回复为空且不是闲聊 → 联网
+        优先查 DB（已执行），确定没有再联网。
+        """
+        # 概念/方法类：总是联网补充（DB 通常没有这类知识）
+        if self._is_concept_or_guide_question(user_query):
+            return True
+
+        # DB 明确缺少对应时间的数据
+        if self._is_time_data_missing(response, tool_results):
+            return True
+
+        # 回复为空但有明确查询意图（非闲聊）
+        if self._is_empty_response(response) and intent.intent != "CHITCHAT":
+            return True
+
+        return False
+
+    def _execute_web_search(self, user_query: str, intent) -> dict:
+        """执行联网搜索。"""
+        try:
+            tool = self.tool_registry.get("web_search")
+            if not tool:
+                return {}
+            # 构造搜索词：对于概念/方法类直接用原问题，否则加点股票信息
+            search_query = user_query
+            if not self._is_concept_or_guide_question(user_query):
+                entities = intent.entities or []
+                if entities:
+                    search_query = f"{' '.join(entities[:3])} {user_query}"
+            result = self.tool_executor.execute(tool, {"query": search_query})
+            return result.data if result.success else {}
+        except Exception as e:
+            print(f"[Agent] Web search failed: {e}")
+            return {}
+
+    def _build_hybrid_response(self, db_response: str, web_data: dict) -> str:
+        """
+        构建混合回复：DB 数据 + 联网数据，明确区分来源。
+        """
+        web_rendered = web_data.get("rendered", "")
+        if not web_rendered:
+            return db_response
+
+        if db_response and db_response.strip() and not self._is_empty_response(db_response):
+            # DB 有数据 + 联网数据
+            return (
+                f"{db_response.strip()}\n\n"
+                f"---\n\n"
+                f"{web_rendered}"
+            )
+        else:
+            # 仅联网数据
+            return (
+                f"**📊 数据库查询**\n"
+                f"数据库中暂无相关信息。\n\n"
+                f"{web_rendered}"
+            )
+
+    # =========================================================================
+    # 上传数据集成 (v2.6.0)
+    # =========================================================================
+
+    def _query_uploaded_data(self, user_query: str, intent) -> dict:
+        """查询用户上传的文件数据。"""
+        try:
+            from ..tools.uploaded_data import get_upload_index
+            index = get_upload_index()
+            if index.is_empty:
+                return {}
+            result = index.search(user_query, top_k=8)
+            return result if result.get("total", 0) > 0 else {}
+        except Exception as e:
+            print(f"[Agent] Upload query failed: {e}")
+            return {}
+
+    def _build_upload_response(self, db_response: str, upload_data: dict) -> str:
+        """构建含上传数据的回复。"""
+        rendered = upload_data.get("rendered", "")
+        sources = upload_data.get("sources", [])
+        src = f"*来源: 用户上传文件 ({chr(44).join(sources)})*" if sources else "*来源: 用户上传文件*"
+        if db_response and db_response.strip() and not self._is_empty_response(db_response):
+            return f"{db_response.strip()}\n\n---\n{rendered}\n{src}"
+        else:
+            return f"**数据库查询**\n数据库中暂无相关信息。\n\n{rendered}\n{src}"
+
+    @staticmethod
+    def _check_data_conflict(db_text: str, upload_text: str) -> list:
+        """简单冲突检测: 比较 DB 和上传文件中相同实体的数值。"""
+        import re
+        conflicts = []
+        db_pairs = re.findall(r"(\w+)\s*[:：=]?\s*([\d,.]+\s*[亿万千]?)", db_text)
+        up_pairs = re.findall(r"(\w+)\s*[:：=]?\s*([\d,.]+\s*[亿万千]?)", upload_text)
+        db_map = {}
+        for e, v in db_pairs:
+            try:
+                db_map[e] = float(v.replace(",","").replace("亿","e8").replace("万","e4").replace("千","e3"))
+            except ValueError:
+                pass
+        for e, v in up_pairs:
+            try:
+                n = float(v.replace(",","").replace("亿","e8").replace("万","e4").replace("千","e3"))
+                if e in db_map and db_map[e] > 0 and abs(db_map[e] - n) / db_map[e] > 0.1:
+                    conflicts.append({"entity": e, "db_value": v, "upload_value": v})
+            except ValueError:
+                pass
+        return conflicts[:5]
+
+    @staticmethod
+    def _format_conflict_warning(conflicts: list) -> str:
+        """格式化数据矛盾警告。"""
+        lines = ["\n⚠️ **数据不一致**:\n"]
+        for c in conflicts:
+            lines.append(f"- **{c["entity"]}**: 数据库={c["db_value"]}, 您的文件={c["upload_value"]}")
+        lines.append("\n请确认以哪个来源为准。\n")
+        return "\n".join(lines)
+
     def _single_tool_fallback(self, user_query, intent):
         """无 LLM 时的单工具降级路径"""
         tool_result = self.router.execute_with_correction(
@@ -236,20 +436,16 @@ class FinancialAgent:
 ## 可用工具
 {tool_definitions}
 
-## 工具选择策略
-- 用户问"主力资金/资金流向/龙虎榜/换手率/涨停"等行情类问题 → 先调 get_stock_price
+## 工具选择策略（从工具注册表自动生成）
+{tool_routing_hints}
+
+## 通用策略
 - 如果行情工具返回"无实时数据" → **不要放弃**，尝试查财报(query_financial_statement)、股东(control_summary)、公告(search_news)
-- 用户问财务/营收/利润/现金流 → query_financial_statement（务必传 statement_type；问"最新/最近"时不要指定report_period，工具会自动取最新）
-- **财务状况/经营情况类问题（无具体年份）**: 必须至少查最近2-3年数据做对比，不能只查一年。先不指定report_period看overview有哪些年份，然后逐年查询，最后给出趋势变化。
-- 用户问股东/持股/股权 → control_summary 或 equity_penetration
-- 用户问违规/处罚/公告 → search_news
-- 用户问风险/造假/排雷 → financial_anomaly_check
+- **财务状况/经营情况类问题（无具体年份）**: 必须至少查最近2-3年数据做对比，不能只查一年。
 - **对比类问题（A vs B）**：工具返回的 overview 一览表包含该股票所有报告期。必须：
   - 先查 A（不指定 report_period）→ 看 overview → 记下有哪些年报(1231)
   - 再查 B（不指定 report_period）→ 看 overview → 与 A 的 overview 对照
-  - **从 overview 中找两只股票都有的年报(1231)** 作为对比基准（如都有 20251231）
-  - 明确传该 report_period 分别再查一次 → 确保同口径
-  - 如果 overview 显示没有共同年报 → 选共同季报 → 都没有 → 诚实告知
+  - **从 overview 中找两只股票都有的年报(1231)** 作为对比基准
   - 年报用 ÷365，季报用 ÷90
 
 ## 规则（严格遵守）
@@ -261,7 +457,7 @@ class FinancialAgent:
 
 ## 关键原则
 - **绝不编造数据**，工具返回什么就说什么，没查到就是没有
-- **严禁使用训练数据/预训练知识回答**。你的训练数据不是系统数据源，只有工具返回的结果才是真实数据。如果工具返回58亿，就答58亿；如果工具返回13万，就答13万并标注异常
+- **严禁使用训练数据/预训练知识回答**。你的训练数据不是系统数据源，只有工具返回的结果才是真实数据。
 - **禁止使用"公开信息""根据公开资料""据了解""根据公开财报"等措辞补充数据**——工具没返回的一律不能说
 - 系统没有实时行情（股价/涨跌幅/换手率/主力资金/龙虎榜），诚实告知
 - 系统有真实财报、股东、公告、研报数据，**主动提供这些替代信息**
@@ -326,8 +522,10 @@ Respond ONLY with valid JSON."""
         if action_plan and len(action_plan) > 1:
             plan_hint = f"\n## 推荐执行计划\n建议按顺序调用: {' → '.join(action_plan)}\n你可以根据实际情况调整计划。\n"
 
+        routing_hints = self.tool_registry.get_all_routing_hints() or "- 根据问题关键词选择最匹配的工具\n"
         system_msg = self.REACT_SYSTEM_PROMPT.format(
             tool_definitions=tools_def,
+            tool_routing_hints=routing_hints,
             max_iterations=max_iterations,
             memory_context=context_text[:2000],
             conversation_history=history_str or "（新对话开始）",

@@ -38,24 +38,22 @@ class ToolExecutor:
             data_loader: DataLoader 实例，用于 Mock 数据查询
         """
         self.data_loader = data_loader
+        # _executors 保留作为向后兼容的降级路径。
+        # 新工具通过 BaseTool 插件注册（tool.executor 优先）。
         self._executors = {
-            "get_stock_price": self._mock_market_data,
-            "query_financial_statement": self._mock_financial_statement,
-            "equity_penetration": self._exec_equity_penetration,
-            "event_trace": self._exec_event_trace,
-            "control_summary": self._exec_control_summary,
-            "financial_anomaly_check": self._exec_financial_anomaly,
-            "multi_period_analysis": self._exec_multi_period,
-            "search_news": self._mock_news_search,
-            "financial_calculator": self._mock_calculator,
-            # P0 新增: 券商研报检索
-            "search_reports": self._exec_search_reports,
-            "search_reports_by_stock": self._exec_search_reports_by_stock,
+            # 所有工具已迁移到 BaseTool。
+            # 以下保留仅用于 agent_loop._supplement_query 的快速路径：
+            "query_financial_statement": self._mock_financial_statement,  # 保留：_supplement_query 使用
+            "control_summary": self._exec_control_summary,  # 保留：_supplement_query 使用
+            "search_news": self._mock_news_search,  # 保留：_supplement_query 使用
         }
 
     def execute(self, tool: ToolMeta, params: Dict[str, Any]) -> ToolResult:
         """
         执行工具调用。
+
+        优先使用 tool.executor（BaseTool 插件方式），
+        其次查找 self._executors（传统方式，向后兼容）。
 
         Args:
             tool: 工具元数据
@@ -76,49 +74,50 @@ class ToolExecutor:
                 execution_time_ms=(time.time() - start_time) * 1000,
             )
 
-        # 执行
+        # 执行 —— 优先使用 tool.executor（BaseTool 插件方式）
+        executor = tool.executor  # BaseTool._make_executor() 设置的闭包
+        if executor:
+            try:
+                data = executor(params, data_loader=self.data_loader)
+                return ToolResult(
+                    success=True,
+                    tool_name=tool.name,
+                    data=data,
+                    execution_time_ms=(time.time() - start_time) * 1000,
+                )
+            except Exception as e:
+                return ToolResult(
+                    success=False,
+                    tool_name=tool.name,
+                    error=str(e),
+                    execution_time_ms=(time.time() - start_time) * 1000,
+                )
+
+        # 降级: 查找 _executors 字典（传统方式，向后兼容）
         executor = self._executors.get(tool.name)
-        if not executor:
-            # 尝试调用注册的 executor
-            if tool.executor:
-                try:
-                    data = tool.executor(params)
-                    return ToolResult(
-                        success=True,
-                        tool_name=tool.name,
-                        data=data,
-                        execution_time_ms=(time.time() - start_time) * 1000,
-                    )
-                except Exception as e:
-                    return ToolResult(
-                        success=False,
-                        tool_name=tool.name,
-                        error=str(e),
-                        execution_time_ms=(time.time() - start_time) * 1000,
-                    )
+        if executor:
+            try:
+                data = executor(params)
+                return ToolResult(
+                    success=True,
+                    tool_name=tool.name,
+                    data=data,
+                    execution_time_ms=(time.time() - start_time) * 1000,
+                )
+            except Exception as e:
+                return ToolResult(
+                    success=False,
+                    tool_name=tool.name,
+                    error=str(e),
+                    execution_time_ms=(time.time() - start_time) * 1000,
+                )
 
-            return ToolResult(
-                success=False,
-                tool_name=tool.name,
-                error=f"工具 '{tool.name}' 未注册执行器",
-                execution_time_ms=(time.time() - start_time) * 1000,
-            )
-
-        try:
-            data = executor(params)
-            return ToolResult(
-                success=True,
-                tool_name=tool.name,
-                data=data,
-                execution_time_ms=(time.time() - start_time) * 1000,
-            )
-        except Exception as e:
-            return ToolResult(
-                success=False,
-                tool_name=tool.name,
-                error=str(e),
-                execution_time_ms=(time.time() - start_time) * 1000,
-            )
+        return ToolResult(
+            success=False,
+            tool_name=tool.name,
+            error=f"工具 '{tool.name}' 未注册执行器",
+            execution_time_ms=(time.time() - start_time) * 1000,
+        )
 
     # ---- Mock 执行器（使用数据集模拟） ----
 
@@ -449,16 +448,16 @@ class ToolExecutor:
     def _exec_search_reports(self, params: Dict) -> Dict:
         """P0: 券商研报检索（数据集 5）"""
         try:
-            from ..tools.research_reports import SearchReportsTool
-            return SearchReportsTool.execute(params)
+            from ..tools.research_reports import SearchReportsToolImpl
+            return SearchReportsToolImpl.execute(params)
         except Exception as e:
             return {"error": str(e), "source": "research_reports_error"}
 
     def _exec_search_reports_by_stock(self, params: Dict) -> Dict:
         """P0: 按股票查研报"""
         try:
-            from ..tools.research_reports import SearchReportsByStockTool
-            return SearchReportsByStockTool.execute(params)
+            from ..tools.research_reports import SearchReportsByStockToolImpl
+            return SearchReportsByStockToolImpl.execute(params)
         except Exception as e:
             return {"error": str(e), "source": "research_reports_error"}
 

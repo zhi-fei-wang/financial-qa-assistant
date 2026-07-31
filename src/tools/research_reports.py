@@ -207,8 +207,8 @@ def get_report_search() -> ResearchReportSearch:
 
 # ---------- 注册为工具 ----------
 
-class SearchReportsTool:
-    """研报检索 Skill — 注册到 Task1 Router (P0 新增)"""
+class SearchReportsToolImpl:
+    """研报检索 Skill 实现 (P0 新增)"""
 
     name = "search_reports"
     description = (
@@ -251,8 +251,8 @@ class SearchReportsTool:
         }
 
 
-class SearchReportsByStockTool:
-    """按股票查研报 — 快速了解市场看法 (P0 新增)"""
+class SearchReportsByStockToolImpl:
+    """按股票查研报实现 (P0 新增)"""
 
     name = "search_reports_by_stock"
     description = "查询某只股票的所有研报，按日期排序，附带评级分布。"
@@ -295,5 +295,58 @@ class SearchReportsByStockTool:
             "envelope": env,
         }
 
+
+# =========================================================================
+# BaseTool 包装器
+# =========================================================================
+
+from .base import BaseTool, register_tool_class
+
+
+@register_tool_class
+class SearchReportsTool(BaseTool):
+    """券商研报检索。"""
+    name = "search_reports"
+    description = (
+        "券商研报检索: 搜索约5.5万篇券商研报，支持关键词+股票代码+行业过滤。"
+        "返回研报标题/摘要/评级/券商/行业分类。"
+    )
+    required_params = ["query"]
+    optional_params = ["stock_code", "industry", "max_results"]
+    intent_match = ["NEWS_EVENT", "FINANCIAL_ANALYSIS"]
+    param_schema = {
+        "query": {"description": "搜索关键词（标题+摘要）"},
+        "stock_code": {"description": "股票代码过滤"},
+        "industry": {"description": "行业过滤（如'电力设备'）"},
+        "max_results": {"description": "最大返回数，默认15"},
+    }
+    routing_hint = "用户问研报/券商观点/行业分析 → search_reports"
+    trigger_keywords = ["研报", "券商", "研究报告", "行业分析"]
+    max_retries = 2
+    timeout_sec = 10
+
+    def execute(self, params, data_loader=None):
+        return SearchReportsToolImpl.execute(params)
+
+
+@register_tool_class
+class SearchReportsByStockTool(BaseTool):
+    """按股票查研报。"""
+    name = "search_reports_by_stock"
+    description = "查询某只股票的所有研报，按日期排序，附带评级分布。"
+    required_params = ["stock_code"]
+    optional_params = ["max_results"]
+    intent_match = ["NEWS_EVENT", "FINANCIAL_ANALYSIS"]
+    param_schema = {
+        "stock_code": {"description": "股票代码"},
+        "max_results": {"description": "最大返回数，默认10"},
+    }
+    routing_hint = "用户要某只股票的研报 → search_reports_by_stock"
+    trigger_keywords = ["研报", "券商评级"]
+    max_retries = 1
+    timeout_sec = 8
+
+    def execute(self, params, data_loader=None):
+        return SearchReportsByStockToolImpl.execute(params)
 
 TASK_SEARCH_SKILLS = [SearchReportsTool, SearchReportsByStockTool]

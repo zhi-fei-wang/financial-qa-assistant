@@ -25,20 +25,59 @@ class ToolMeta:
 class ToolRegistry:
     """
     工具注册表：管理所有可供 Agent 调用的工具。
+
+    支持两种注册方式：
+      1. register(ToolMeta) — 传统方式（向后兼容）
+      2. register_from_class(BaseTool子类) — 插件方式（自动提取元数据）
     """
 
-    def __init__(self):
+    def __init__(self, auto_register: bool = True):
         self._tools: Dict[str, ToolMeta] = {}
         self._intent_index: Dict[str, List[str]] = {}  # intent → tool names
-        self._register_default_tools()
+        self._tool_classes: Dict[str, Any] = {}  # name → BaseTool 子类
+        if auto_register:
+            self._register_default_tools()
 
     def register(self, tool: ToolMeta):
-        """注册一个工具"""
+        """注册一个工具（通过 ToolMeta）"""
         self._tools[tool.name] = tool
         for intent in tool.intent_match:
             if intent not in self._intent_index:
                 self._intent_index[intent] = []
-            self._intent_index[intent].append(tool.name)
+            if tool.name not in self._intent_index[intent]:
+                self._intent_index[intent].append(tool.name)
+
+    def register_from_class(self, tool_cls) -> ToolMeta:
+        """
+        从 BaseTool 子类注册工具（插件方式）。
+
+        自动提取类属性创建 ToolMeta，并关联 BaseTool 子类以便后续
+        执行、验证、Prompt 生成等操作。
+
+        Args:
+            tool_cls: BaseTool 子类
+
+        Returns:
+            创建的 ToolMeta
+        """
+        meta = ToolMeta(
+            name=tool_cls.name,
+            description=tool_cls.description,
+            required_params=list(tool_cls.required_params),
+            optional_params=list(tool_cls.optional_params),
+            intent_match=list(tool_cls.intent_match),
+            executor=tool_cls._make_executor(),  # 闭包调用 execute()
+            max_retries=getattr(tool_cls, 'max_retries', 2),
+            timeout_sec=getattr(tool_cls, 'timeout_sec', 10),
+            param_schema=dict(getattr(tool_cls, 'param_schema', {})),
+        )
+        self.register(meta)
+        self._tool_classes[meta.name] = tool_cls
+        return meta
+
+    def get_tool_class(self, name: str):
+        """获取工具对应的 BaseTool 子类（如果存在）。"""
+        return self._tool_classes.get(name)
 
     def get(self, name: str) -> Optional[ToolMeta]:
         """获取工具元数据"""
@@ -130,202 +169,147 @@ class ToolRegistry:
         import json
         return json.dumps(definitions, ensure_ascii=False, indent=2)
 
+    # =========================================================================
+    # 自动生成方法（供 intent_classifier / agent_loop / prompts 使用）
+    # =========================================================================
+
+    def get_all_routing_hints(self) -> str:
+        """
+        汇总所有工具的 routing_hint，用于自动生成 REACT_SYSTEM_PROMPT。
+        """
+        hints = []
+        for name, tool_cls in self._tool_classes.items():
+            hint = getattr(tool_cls, 'routing_hint', '')
+            if hint:
+                hints.append(hint)
+        return "\n- ".join(hints) if hints else ""
+
+    def get_intent_tool_map(self) -> Dict[str, str]:
+        """
+        自动生成 INTENT → 默认工具 映射。
+        用于替代 intent_classifier 中的 INTENT_TOOL_MAP 硬编码。
+        """
+        intent_map = {}
+        for intent in self._intent_index:
+            tool_names = self._intent_index[intent]
+            if tool_names:
+                intent_map[intent] = tool_names[0]  # 第一个工具为默认
+        return intent_map
+
+    def get_sub_intent_tool_map(self) -> Dict[str, str]:
+        """
+        自动生成 子意图 → 工具 映射。
+        从 _tool_classes 的 sub_intent 属性提取。
+        """
+        sub_map = {}
+        for name, tool_cls in self._tool_classes.items():
+            sub = getattr(tool_cls, 'sub_intent', '')
+            if sub:
+                sub_map[sub] = name
+        return sub_map
+
+    def get_keywords_by_intent(self) -> Dict[str, List[str]]:
+        """
+        自动生成 intent → trigger_keywords 映射。
+        用于替代 intent_classifier 中的关键词硬编码。
+        """
+        kw_map: Dict[str, List[str]] = {}
+        for name, tool_cls in self._tool_classes.items():
+            keywords = getattr(tool_cls, 'trigger_keywords', []) or []
+            for intent in getattr(tool_cls, 'intent_match', []):
+                if intent not in kw_map:
+                    kw_map[intent] = []
+                kw_map[intent].extend(keywords)
+        # 去重
+        for intent in kw_map:
+            kw_map[intent] = list(dict.fromkeys(kw_map[intent]))
+        return kw_map
+
+    def get_tool_catalog_for_prompt(self) -> str:
+        """
+        生成 INTENT_CLASSIFICATION_PROMPT 中的工具目录文本。
+        动态生成，替代 prompts.py 中的硬编码意图→工具列表。
+        """
+        lines = []
+        for intent, tools in sorted(self._intent_index.items()):
+            if intent == "CHITCHAT":
+                continue
+            lines.append(f"### {intent}")
+            for tname in tools:
+                tool = self._tools.get(tname)
+                if not tool:
+                    continue
+                lines.append(f"- {tool.description}")
+                # 附加子意图信息
+                tc = self._tool_classes.get(tname)
+                if tc:
+                    sub = getattr(tc, 'sub_intent', '') or ''
+                    keywords = getattr(tc, 'trigger_keywords', []) or []
+                    if sub or keywords:
+                        parts = []
+                        if sub:
+                            parts.append(f"sub_intent: {sub}")
+                        if keywords:
+                            parts.append(f"关键词: {', '.join(keywords[:8])}")
+                        lines.append(f"  ({'; '.join(parts)})")
+                lines.append(f"  → suggested_tool: \"{tool.name}\"")
+            lines.append("")
+        return "\n".join(lines)
+
     def _register_default_tools(self):
         """注册系统默认工具"""
 
-        # 1. 行情查询
-        self.register(ToolMeta(
-            name="get_stock_price",
-            description="获取指定股票的最新价格或历史价格数据。支持A股/港股/美股。",
-            required_params=["stock_code"],
-            optional_params=["start_date", "end_date", "frequency"],
-            intent_match=["MARKET_DATA"],
-            max_retries=2,
-            timeout_sec=5,
-            param_schema={
-                "stock_code": {"description": "6位股票代码，如 600519"},
-                "start_date": {"description": "开始日期 YYYY-MM-DD"},
-                "end_date": {"description": "结束日期 YYYY-MM-DD"},
-                "frequency": {"description": "频率: daily/weekly/monthly"},
-            },
-        ))
+        # 1. 行情查询 — BaseTool 插件
+        from ..tools.market_data import MarketDataTool
+        self.register_from_class(MarketDataTool)
 
-        # 2. 财务报表查询
-        self.register(ToolMeta(
-            name="query_financial_statement",
-            description="查询上市公司财务报表数据，包括资产负债表、利润表、现金流量表。",
-            required_params=["stock_code", "report_period"],
-            optional_params=["statement_type", "indicators"],
-            intent_match=["FINANCIAL_ANALYSIS"],
-            max_retries=1,
-            timeout_sec=10,
-            param_schema={
-                "stock_code": {"description": "6位股票代码"},
-                "report_period": {"description": "报告期，如 2024Q1 或 2023"},
-                "statement_type": {"description": "报表类型: balance_sheet/income/cashflow"},
-                "indicators": {"description": "指定指标列表，逗号分隔"},
-            },
-        ))
+        # 2. 财务报表查询 — BaseTool 插件
+        from ..tools.query_financial import QueryFinancialTool
+        self.register_from_class(QueryFinancialTool)
 
-        # 3. 股权穿透查询
-        self.register(ToolMeta(
-            name="equity_penetration",
-            description="股权穿透查询，输出多层控股链。支持向上追溯实际控制人、向下穿透参股公司。",
-            required_params=["target_entity"],
-            optional_params=["max_depth", "min_ratio", "direction"],
-            intent_match=["EQUITY_PENETRATION"],
-            max_retries=0,
-            timeout_sec=5,
-            param_schema={
-                "target_entity": {"description": "目标实体：股票代码或股东名称"},
-                "max_depth": {"description": "最大穿透深度，默认5层"},
-                "min_ratio": {"description": "最小持股比例阈值(%)，默认1"},
-                "direction": {"description": "穿透方向: upstream(向上)/downstream(向下)/both"},
-            },
-        ))
+        # 3. 股权穿透查询 — BaseTool 插件
+        from ..tools.equity_graph import EquityPenetrationTool
+        self.register_from_class(EquityPenetrationTool)
 
-        # 4. 新闻舆情检索
-        self.register(ToolMeta(
-            name="search_news",
-            description="搜索与标的相关的新闻舆情、违规公告、风险提示等。",
-            required_params=["query"],
-            optional_params=["stock_code", "date_range", "source_filter", "max_results"],
-            intent_match=["NEWS_EVENT"],
-            max_retries=2,
-            timeout_sec=8,
-            param_schema={
-                "query": {"description": "搜索关键词"},
-                "stock_code": {"description": "关联股票代码"},
-                "date_range": {"description": "日期范围: 30d/90d/1y"},
-                "max_results": {"description": "最大返回条数，默认20"},
-            },
-        ))
+        # 4. 新闻舆情检索 — BaseTool 插件
+        from ..tools.news_search import NewsSearchTool
+        self.register_from_class(NewsSearchTool)
 
-        # 4b. 券商研报检索 (P0 新增)
-        self.register(ToolMeta(
-            name="search_reports",
-            description="券商研报检索: 搜索约5.5万篇研报，支持关键词+股票代码+行业过滤。返回标题/摘要/评级/券商。",
-            required_params=["query"],
-            optional_params=["stock_code", "industry", "max_results"],
-            intent_match=["NEWS_EVENT", "FINANCIAL_ANALYSIS"],
-            max_retries=2,
-            timeout_sec=10,
-            param_schema={
-                "query": {"description": "搜索关键词（标题+摘要）"},
-                "stock_code": {"description": "股票代码过滤"},
-                "industry": {"description": "行业过滤（如'电力设备'）"},
-                "max_results": {"description": "最大返回数，默认15"},
-            },
-        ))
-        self.register(ToolMeta(
-            name="search_reports_by_stock",
-            description="按股票代码查询所有研报，按日期排序，附带评级分布。",
-            required_params=["stock_code"],
-            optional_params=["max_results"],
-            intent_match=["NEWS_EVENT", "FINANCIAL_ANALYSIS"],
-            max_retries=1,
-            timeout_sec=8,
-            param_schema={
-                "stock_code": {"description": "股票代码"},
-                "max_results": {"description": "最大返回数，默认10"},
-            },
-        ))
+        # 4b. 券商研报检索 — BaseTool 插件
+        from ..tools.research_reports import SearchReportsTool, SearchReportsByStockTool
+        self.register_from_class(SearchReportsTool)
+        self.register_from_class(SearchReportsByStockTool)
 
-        # 5. 财务计算器
-        self.register(ToolMeta(
-            name="financial_calculator",
-            description="执行金融指标计算：均值、增长率、比率等。",
-            required_params=["expression"],
-            optional_params=["stock_code", "period"],
-            intent_match=["CALCULATION"],
-            max_retries=1,
-            timeout_sec=3,
-            param_schema={
-                "expression": {"description": "计算表达式或自然语言描述"},
-                "stock_code": {"description": "关联股票代码"},
-                "period": {"description": "计算期间"},
-            },
-        ))
+        # 5. 财务计算器 — BaseTool 插件
+        from ..tools.financial_calculator import FinancialCalculatorTool
+        self.register_from_class(FinancialCalculatorTool)
 
         # === Task 2 技能注册 ===
 
-        # 6. 股权穿透 V2 (Task 2)
-        self.register(ToolMeta(
-            name="equity_penetration",
-            description="股权穿透查询，输出多层控股链。支持向上追溯实际控制人、向下穿透参股公司、同业股东交叉对比。深度>3层的准确率≥85%。",
-            required_params=["target_entity"],
-            optional_params=["max_depth", "min_ratio", "direction"],
-            intent_match=["EQUITY_PENETRATION"],
-            max_retries=0,
-            timeout_sec=5,
-            param_schema={
-                "target_entity": {"description": "目标实体：股票代码或股东名称"},
-                "max_depth": {"description": "最大穿透深度，默认5层"},
-                "min_ratio": {"description": "最小持股比例阈值(%)，默认0.5"},
-                "direction": {"description": "穿透方向: upstream(向上)/downstream(向下)/both"},
-            },
-        ))
+        # 6. 股权穿透 — 已在 #3 注册 (EquityPenetrationTool)，此处跳过重复
 
-        # 7. 事件溯源 (Task 2)
-        self.register(ToolMeta(
-            name="event_trace",
-            description="查询标的公司的舆情事件脉络，输出事件簇分类和时间线。支持事件类型筛选和股-舆对齐分析。",
-            required_params=["stock_code"],
-            optional_params=["event_type", "date_range", "max_events"],
-            intent_match=["NEWS_EVENT"],
-            max_retries=1,
-            timeout_sec=5,
-            param_schema={
-                "stock_code": {"description": "6位股票代码"},
-                "event_type": {"description": "事件类型: 监管处罚/股权变动/并购重组/风险事件"},
-                "date_range": {"description": "日期范围: 30d/90d/1y/ALL"},
-                "max_events": {"description": "最大返回事件数，默认20"},
-            },
-        ))
+        # 7. 事件溯源 — BaseTool 插件
+        from ..tools.equity_graph import EventTraceTool
+        self.register_from_class(EventTraceTool)
 
-        # 8. 控股摘要 (Task 2)
-        self.register(ToolMeta(
-            name="control_summary",
-            description="获取某只股票的控股权摘要：实际控制人、Top 5 股东、股权集中度。",
-            required_params=["stock_code"],
-            optional_params=[],
-            intent_match=["EQUITY_PENETRATION", "FINANCIAL_ANALYSIS"],
-            max_retries=0,
-            timeout_sec=3,
-            param_schema={
-                "stock_code": {"description": "6位股票代码"},
-            },
-        ))
+        # 8. 控股摘要 — BaseTool 插件
+        from ..tools.equity_graph import ControlSummaryTool
+        self.register_from_class(ControlSummaryTool)
 
         # === Task 3 技能注册 ===
 
-        # 9. 财务异象甄别 (Task 3)
-        self.register(ToolMeta(
-            name="financial_anomaly_check",
-            description="财务异象智能甄别：对目标股票执行跨科目勾稽演算，检测存货/营收比、现金流/利润悖离、异常财务费用等14项规则，生成多维风险评分和结构化研判报告。预警F1-Score≥85%。",
-            required_params=["stock_code"],
-            optional_params=["report_period", "include_llm_analysis"],
-            intent_match=["FINANCIAL_ANALYSIS"],
-            max_retries=1,
-            timeout_sec=15,
-            param_schema={
-                "stock_code": {"description": "6位股票代码"},
-                "report_period": {"description": "报告期，如2024Q1"},
-                "include_llm_analysis": {"description": "是否包含AI深度分析，默认true"},
-            },
-        ))
+        # 9. 财务异象甄别 — BaseTool 插件
+        from ..tools.financial_anomaly import FinancialAnomalyTool
+        self.register_from_class(FinancialAnomalyTool)
 
-        # 10. 多期对比分析 (Task 3)
-        self.register(ToolMeta(
-            name="multi_period_analysis",
-            description="对目标股票的多期财报做趋势分析，检测指标恶化趋势。",
-            required_params=["stock_code"],
-            optional_params=["periods"],
-            intent_match=["FINANCIAL_ANALYSIS"],
-            max_retries=0,
-            timeout_sec=10,
-            param_schema={
-                "stock_code": {"description": "6位股票代码"},
-                "periods": {"description": "分析期数，默认5期"},
-            },
-        ))
+        # 10. 多期对比分析 — BaseTool 插件
+        from ..tools.financial_anomaly import MultiPeriodAnalysisTool
+        self.register_from_class(MultiPeriodAnalysisTool)
+
+        # 11. 联网搜索 — BaseTool 插件 (v2.5.0)
+        from ..tools.web_search import WebSearchTool
+        self.register_from_class(WebSearchTool)
+
+        # 12. 用户上传数据查询 — BaseTool 插件 (v2.6.0)
+        from ..tools.uploaded_data import UploadedDataTool
+        self.register_from_class(UploadedDataTool)

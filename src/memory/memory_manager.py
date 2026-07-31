@@ -89,6 +89,7 @@ class MemoryManager:
         agent_response: str = "",
         tool_results: Optional[List[Dict]] = None,
         intent: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         每轮对话后调用 — 核心入口 (Priority 4 升级: Fact 提取替代 LLM 摘要)。
@@ -147,6 +148,7 @@ class MemoryManager:
             entities=entity_ids,
             intent=intent,
             timestamp=time.time(),
+            metadata=metadata or {},
         )
 
         # === Step 4: 工作记忆更新 ===
@@ -157,6 +159,7 @@ class MemoryManager:
             entities=entity_ids,
             intent=intent,
             summary=turn_summary,
+            metadata=metadata or {},
         )
 
         # === Step 5: SignalFusion 索引增量更新 ===

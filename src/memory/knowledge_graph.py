@@ -67,10 +67,14 @@ class KnowledgeGraph:
                 self.G.add_edge(source, target, type=rel_type, **{k: v for k, v in rel.items() if k not in ("source", "target", "type")})
 
     def add_turn_node(self, turn_id: str, summary: str, entities: List[str],
-                      intent: str = "", timestamp: float = 0.0) -> str:
-        """添加对话轮次节点并连接实体"""
-        self.G.add_node(turn_id, type="ConversationTurn", summary=summary,
-                        intent=intent, timestamp=timestamp)
+                      intent: str = "", timestamp: float = 0.0,
+                      metadata: Dict[str, Any] = None) -> str:
+        """添加对话轮次节点并连接实体。metadata 可包含 source_type 等标注。"""
+        node_attrs = dict(type="ConversationTurn", summary=summary,
+                          intent=intent, timestamp=timestamp)
+        if metadata:
+            node_attrs.update(metadata)
+        self.G.add_node(turn_id, **node_attrs)
 
         # 连接实体
         for entity_id in entities:

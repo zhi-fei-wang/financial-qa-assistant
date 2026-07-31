@@ -350,7 +350,132 @@ class ControlSummarySkill:
         return summary
 
 
-# 导出：供 Task1 Router 注册使用
+# =========================================================================
+# BaseTool 包装器 — 将 Skill 注册为 Router 可直接调用的插件
+# =========================================================================
+
+from .base import BaseTool, register_tool_class
+
+
+@register_tool_class
+class EquityPenetrationTool(BaseTool):
+    """股权穿透查询，输出多层控股链。"""
+    name = EquityPenetrationSkill.name
+    description = EquityPenetrationSkill.description
+    required_params = list(EquityPenetrationSkill.required_params)
+    optional_params = list(EquityPenetrationSkill.optional_params)
+    intent_match = ["EQUITY_PENETRATION"]
+    param_schema = {
+        "target_entity": {"description": "目标实体：股票代码或股东名称"},
+        "max_depth": {"description": "最大穿透深度，默认5层"},
+        "min_ratio": {"description": "最小持股比例阈值(%)，默认0.5"},
+        "direction": {"description": "穿透方向: upstream(向上)/downstream(向下)/both"},
+    }
+    routing_hint = "用户问股权穿透/控股链/实控人/股东穿透 → equity_penetration；若数据断层（非上市公司）如实告知"
+    trigger_keywords = [
+        "股权穿透", "股权结构", "控股链", "实控人", "实际控制人",
+        "穿透", "股东穿透", "控制链", "控股股东", "持股链",
+    ]
+    max_retries = 0
+    timeout_sec = 5
+
+    def execute(self, params, data_loader=None):
+        return EquityPenetrationSkill.execute(params)
+
+
+@register_tool_class
+class EventTraceTool(BaseTool):
+    """查询标的公司的舆情事件脉络。"""
+    name = EventTraceSkill.name
+    description = EventTraceSkill.description
+    required_params = list(EventTraceSkill.required_params)
+    optional_params = list(EventTraceSkill.optional_params)
+    intent_match = ["NEWS_EVENT"]
+    sub_intent = "EVENT_TRACE"
+    param_schema = {
+        "stock_code": {"description": "6位股票代码"},
+        "event_type": {"description": "事件类型: 监管处罚/股权变动/并购重组/风险事件"},
+        "date_range": {"description": "日期范围: 30d/90d/1y/ALL"},
+        "max_events": {"description": "最大返回事件数，默认20"},
+    }
+    routing_hint = "用户问事件脉络/时间线/舆情 → event_trace"
+    trigger_keywords = ["事件脉络", "时间线", "大事", "舆情", "事件溯源"]
+    max_retries = 1
+    timeout_sec = 5
+
+    def execute(self, params, data_loader=None):
+        return EventTraceSkill.execute(params)
+
+
+@register_tool_class
+class ControlSummaryTool(BaseTool):
+    """获取控股权摘要。"""
+    name = ControlSummarySkill.name
+    description = ControlSummarySkill.description
+    required_params = list(ControlSummarySkill.required_params)
+    optional_params = list(ControlSummarySkill.optional_params)
+    intent_match = ["EQUITY_PENETRATION", "FINANCIAL_ANALYSIS"]
+    sub_intent = "SHAREHOLDER_QUERY"
+    param_schema = {
+        "stock_code": {"description": "6位股票代码"},
+    }
+    routing_hint = "用户问股东/持股/Top N 股东 → control_summary"
+    trigger_keywords = ["股东", "持股", "十大股东", "前十大", "股东结构"]
+    max_retries = 0
+    timeout_sec = 3
+
+    def execute(self, params, data_loader=None):
+        stock_code = params.get("stock_code", "")
+        # 快速路径：直接从 DataFrame 查询（~3s vs 90s 图构建）
+        if data_loader:
+            try:
+                df = data_loader.load_shareholder_data()
+                matched = df[df["stock_code"].astype(str).str.contains(str(stock_code), na=False)]
+                if len(matched) > 0:
+                    if "s_holder_enddate" in matched.columns:
+                        matched = matched.sort_values("s_holder_enddate", ascending=False)
+                    matched_unique = matched.drop_duplicates(subset=["s_holder_name"], keep="first")
+                    top10 = matched_unique.sort_values("s_holder_pct", ascending=False).head(10)
+                    holders = []
+                    total_pct = 0
+                    for _, row in top10.iterrows():
+                        h = {
+                            "name": str(row.get("s_holder_name", "")),
+                            "pct": float(row.get("s_holder_pct", 0)),
+                            "type": str(row.get("holder_type", "未知")),
+                        }
+                        holders.append(h)
+                        total_pct += h["pct"]
+
+                    rendered_lines = [
+                        f"数据来源: 真实股东数据集 (2/clean.xlsx)",
+                        f"股票代码: {stock_code}",
+                        f"股东总数: {len(matched)}",
+                        f"Top10 持股集中度: {total_pct:.1f}%",
+                        "",
+                        "前十大大股东:",
+                    ]
+                    for i, h in enumerate(holders):
+                        rendered_lines.append(f"  {i+1}. {h['name'][:40]} | 持股 {h['pct']:.2f}% | {h['type']}")
+
+                    return {
+                        "stock_code": stock_code,
+                        "total_holders": len(matched),
+                        "top5_concentration": sum(h["pct"] for h in holders[:5]),
+                        "top10_concentration": total_pct,
+                        "top_holders": holders,
+                        "rendered": "\n".join(rendered_lines),
+                        "source": "dataset",
+                        "method": "fast_dataframe",
+                    }
+            except Exception as e:
+                print(f"[ControlSummaryTool] Fast path failed: {e}")
+
+        # 降级：走完整图构建路径（首次约90s，后续缓存）
+        return ControlSummarySkill.execute(params)
+
+
+# 导出：供 Task1 Router 注册使用（保留旧接口）
 TASK2_SKILLS = [
     EquityPenetrationSkill,
     EventTraceSkill,

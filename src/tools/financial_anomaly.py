@@ -188,6 +188,61 @@ class MultiPeriodAnalysisSkill:
         }
 
 
+# =========================================================================
+# BaseTool 包装器
+# =========================================================================
+
+from .base import BaseTool, register_tool_class
+
+
+@register_tool_class
+class FinancialAnomalyTool(BaseTool):
+    """财务异象智能甄别。"""
+    name = FinancialAnomalySkill.name
+    description = FinancialAnomalySkill.description
+    required_params = list(FinancialAnomalySkill.required_params)
+    optional_params = list(FinancialAnomalySkill.optional_params)
+    intent_match = ["FINANCIAL_ANALYSIS"]
+    sub_intent = "ANOMALY_CHECK"
+    param_schema = {
+        "stock_code": {"description": "6位股票代码"},
+        "report_period": {"description": "报告期，如2024Q1"},
+        "include_llm_analysis": {"description": "是否包含AI深度分析，默认true"},
+    }
+    routing_hint = "用户问造假/排雷/风险评分/勾稽 → financial_anomaly_check"
+    trigger_keywords = [
+        "造假", "排雷", "异象", "勾稽", "疑点", "风险评分",
+        "财务造假", "粉饰", "虚增", "欺诈",
+    ]
+    max_retries = 1
+    timeout_sec = 15
+
+    def execute(self, params, data_loader=None):
+        return FinancialAnomalySkill.execute(params)
+
+
+@register_tool_class
+class MultiPeriodAnalysisTool(BaseTool):
+    """多期财务趋势分析。"""
+    name = MultiPeriodAnalysisSkill.name
+    description = MultiPeriodAnalysisSkill.description
+    required_params = list(MultiPeriodAnalysisSkill.required_params)
+    optional_params = list(MultiPeriodAnalysisSkill.optional_params)
+    intent_match = ["FINANCIAL_ANALYSIS"]
+    sub_intent = "COMPARISON"
+    param_schema = {
+        "stock_code": {"description": "6位股票代码"},
+        "periods": {"description": "分析期数，默认5期"},
+    }
+    routing_hint = "用户对比/趋势/近几年 → multi_period_analysis"
+    trigger_keywords = ["对比", "趋势", "近几年", "逐年", "变化趋势"]
+    max_retries = 0
+    timeout_sec = 10
+
+    def execute(self, params, data_loader=None):
+        return MultiPeriodAnalysisSkill.execute(params)
+
+
 # 导出
 TASK3_SKILLS = [
     FinancialAnomalySkill,
